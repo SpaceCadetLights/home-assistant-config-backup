@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "minor_version": 1,
+  "key": "lovelace_resources",
+  "data": {
+    "items": [
+      {
+        "id": "8b0bb8699b314b0d8b9db55c5b4d32ac",
+        "url": "/hacsfiles/mass-player-card/mass-player-card.js?hacstag=1043277514260",
+        "type": "module"
+      }
+    ]
+  }
+}

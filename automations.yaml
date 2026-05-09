@@ -1,0 +1,165 @@
+- id: '1755885323435'
+  alias: LaunchPad Entry Button Trigger
+  description: ''
+  triggers:
+  - trigger: device
+    device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
+    domain: zha
+    type: remote_button_short_press
+    subtype: button
+  - trigger: device
+    device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
+    domain: zha
+    type: remote_button_double_press
+    subtype: button
+  conditions: []
+  actions:
+  - variables:
+      current_node: '{% if trigger.idx == "0" %}action_1777440307432_1_1{% else %}action_1777442063106_0{%
+        endif %}'
+      flow_context: {}
+  - alias: State Machine Loop
+    repeat:
+      until: '{{ current_node == "END" }}'
+      sequence:
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: '{{ current_node == "action_1777440307432_1_1" }}'
+          sequence:
+          - device_id: fcee4dabc01f0e17b0ffd91195247fef
+            domain: light
+            type: toggle
+            entity_id: f5c19506bf5f9814c6f391901910aba9
+          - variables:
+              current_node: END
+        - conditions:
+          - condition: template
+            value_template: '{{ current_node == "action_1777442063106_0" }}'
+          sequence:
+          - target:
+              entity_id:
+              - media_player.spotify_etcetre
+            action: media_player.toggle
+          - variables:
+              current_node: END
+        default:
+        - data:
+            message: 'C.A.F.E.: Unknown state "{{ current_node }}", ending flow'
+            level: warning
+          action: system_log.write
+        - variables:
+            current_node: END
+  mode: single
+  variables:
+    _cafe_metadata:
+      version: 1
+      strategy: native
+      nodes:
+        trigger_1777440307430_0_0:
+          x: 15
+          y: 45
+        action_1777440307432_1_1:
+          x: 312
+          y: 12
+        trigger_1777440350820_0:
+          x: 15
+          y: 195
+        action_1777442063106_0:
+          x: 315
+          y: 240
+      graph_id: 732eb2ed-a365-4c82-97b4-72a46fe246be
+      graph_version: 1
+- id: '1755885936052'
+  alias: Basement Motion Lights Off
+  description: ''
+  triggers:
+  - type: not_occupied
+    device_id: 74f84bb3ebadcdb829564a92354e6c7b
+    entity_id: 82d3558cff6538da5cce2126b99c30ec
+    domain: binary_sensor
+    trigger: device
+    for:
+      hours: 0
+      minutes: 15
+      seconds: 0
+  conditions: []
+  actions:
+  - action: switch.turn_off
+    metadata: {}
+    data: {}
+    target:
+      area_id: basement
+  mode: single
+- id: '1755886052898'
+  alias: Basement Motion Lights On
+  description: ''
+  triggers:
+  - type: occupied
+    device_id: 74f84bb3ebadcdb829564a92354e6c7b
+    entity_id: 82d3558cff6538da5cce2126b99c30ec
+    domain: binary_sensor
+    trigger: device
+  conditions: []
+  actions:
+  - action: switch.turn_on
+    metadata: {}
+    data: {}
+    target:
+      area_id: basement
+  mode: single
+- id: '1756185544633'
+  alias: Bathroom mirror auto on
+  description: ''
+  triggers:
+  - type: occupied
+    device_id: 061b9b51f08bae99558ed4e519ca0d2c
+    entity_id: 4038b6dd46baeaf344c1ceb2911311e0
+    domain: binary_sensor
+    trigger: device
+  conditions:
+  - condition: sun
+    after: sunrise
+    before: sunset
+  actions:
+  - type: turn_on
+    device_id: 4c193640fd6bacde3ccefdd773778801
+    entity_id: ce518609993d364a1c852115bd2c4435
+    domain: switch
+  mode: single
+- id: '1756185594930'
+  alias: Turn off bathroom mirror
+  description: ''
+  triggers:
+  - type: not_occupied
+    device_id: 061b9b51f08bae99558ed4e519ca0d2c
+    entity_id: 4038b6dd46baeaf344c1ceb2911311e0
+    domain: binary_sensor
+    trigger: device
+    for:
+      hours: 0
+      minutes: 10
+      seconds: 0
+  conditions: []
+  actions:
+  - type: turn_off
+    device_id: 4c193640fd6bacde3ccefdd773778801
+    entity_id: ce518609993d364a1c852115bd2c4435
+    domain: switch
+  mode: single
+- id: '1777064054568'
+  alias: Toggle Trillium Power with entry button
+  description: ''
+  triggers:
+  - device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
+    domain: zha
+    type: remote_button_short_press
+    subtype: button
+    trigger: device
+  conditions: []
+  actions:
+  - type: toggle
+    device_id: ff0d0e0b4a9a67b4e9dbb14dead7651d
+    entity_id: b0fc2957ecdb1a2b04a0db35d8666420
+    domain: light
+  mode: single

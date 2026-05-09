@@ -1,0 +1,49 @@
+
+# Loads default set of integrations. Do not remove.
+default_config:
+
+# Load frontend themes from the themes folder
+frontend:
+  themes: !include_dir_merge_named themes
+
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+# Added By Homeway to enable Alexa support.
+alexa:
+  smart_home:
+
+# Added By Homeway to enable Google Assistant support.
+google_assistant:
+  project_id: homewayio
+  service_account:
+    private_key: "nokey"
+    client_email: "support@homeway.io"
+
+
+# Added By Homeway to enable proper HTTP proxy support.
+http:
+  use_x_forwarded_for: true
+  trusted_proxies:
+    - 172.30.32.0/23
+    - 127.0.0.1
+    - ::1
+
+
+# Added by Homeway to enable webrtc video streaming. Prevent Homeway from updating web_rtc by setting following to false: homeway_auto_update:true
+web_rtc:
+  ice_servers:
+    - url:
+        - "stun:stun.cloudflare.com:3478"
+        - "stun:stun.cloudflare.com:53"
+        - "stun:webrtc.homeway.io:443"
+    - url:
+        - "turn:webrtc.homeway.io:443?transport=udp"
+        - "turn:webrtc.homeway.io:3478?transport=udp"
+        - "turn:webrtc.homeway.io:3478?transport=tcp"
+        - "turn:webrtc.homeway.io:80?transport=tcp"
+        - "turns:webrtc.homeway.io:443?transport=tcp"
+        - "turns:webrtc.homeway.io:5349?transport=tcp"
+      username: "UUO7QRHI72BH91H24FEH3SJXR65XM4OFBQK6VLTCVSWWU1WAOCHG70GYH9P5-1"
+      credential: "583303CE72274A0BF0575A822BD9A3450A9F4E3E3E0D44D987898599BED4F2D3"

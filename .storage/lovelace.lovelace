@@ -1,0 +1,163 @@
+{
+  "version": 1,
+  "minor_version": 1,
+  "key": "lovelace.lovelace",
+  "data": {
+    "config": {
+      "views": [
+        {
+          "title": "Home",
+          "sections": [
+            {
+              "type": "grid",
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "New section"
+                },
+                {
+                  "type": "media-control",
+                  "entity": "media_player.spotify_etcetre"
+                },
+                {
+                  "alert_classes": [
+                    "motion",
+                    "moisture"
+                  ],
+                  "sensor_classes": [
+                    "temperature",
+                    "humidity"
+                  ],
+                  "features_position": "bottom",
+                  "display_type": "picture",
+                  "type": "area",
+                  "area": "basement",
+                  "color": ""
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "New section"
+                },
+                {
+                  "type": "entities",
+                  "entities": [
+                    "binary_sensor.motion_sensor_1",
+                    {
+                      "entity": "binary_sensor.motion_sensor_1_occupancy",
+                      "name": "Occupancy"
+                    }
+                  ],
+                  "title": "Motion Sensor 1"
+                },
+                {
+                  "type": "entities",
+                  "entities": [
+                    "binary_sensor.motion_sensor_2",
+                    {
+                      "entity": "binary_sensor.motion_sensor_2_occupancy",
+                      "name": "Occupancy"
+                    }
+                  ],
+                  "title": "Motion Sensor 2"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "New section"
+                }
+              ]
+            }
+          ],
+          "header": {
+            "card": {
+              "type": "markdown",
+              "content": "# Hello {{ user }}\n",
+              "text_only": true
+            }
+          },
+          "cards": [
+            {
+              "type": "entities",
+              "entities": [
+                "assist_satellite.assist_microphone"
+              ],
+              "title": "assist microphone"
+            },
+            {
+              "type": "grid",
+              "square": false,
+              "columns": 1,
+              "cards": [
+                {
+                  "type": "entities",
+                  "entities": [
+                    "remote.projector"
+                  ],
+                  "title": "Projector"
+                },
+                {
+                  "type": "media-control",
+                  "entity": "media_player.projector"
+                }
+              ]
+            },
+            {
+              "type": "entities",
+              "entities": [
+                "light.lightdrive_pico",
+                {
+                  "entity": "select.lightdrive_pico_playlist",
+                  "name": "Playlist"
+                },
+                {
+                  "entity": "select.lightdrive_pico_preset",
+                  "name": "Preset"
+                }
+              ],
+              "title": "LightDrive Pico"
+            },
+            {
+              "type": "entities",
+              "entities": [
+                {
+                  "entity": "select.wegoiot_led_controller_playlist",
+                  "name": "Playlist"
+                },
+                {
+                  "entity": "select.wegoiot_led_controller_preset",
+                  "name": "Preset"
+                },
+                "light.wegoiot_led_controller"
+              ],
+              "title": "Test Lighdrive"
+            },
+            {
+              "type": "entities",
+              "entities": [
+                {
+                  "entity": "select.trillium_playlist",
+                  "name": "Playlist"
+                },
+                {
+                  "entity": "select.trillium_preset",
+                  "name": "Preset"
+                },
+                "light.trillium"
+              ],
+              "title": "Trillium"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

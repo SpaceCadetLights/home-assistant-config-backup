@@ -1,0 +1,7 @@
+- id: '1759295866367'
+  name: Printer Lights On
+  entities:
+    switch.3d_printer_light:
+      friendly_name: 3D Printer Light
+      state: 'on'
+  metadata: {}
