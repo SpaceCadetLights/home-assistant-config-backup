@@ -27,10 +27,9 @@
           - condition: template
             value_template: '{{ current_node == "action_1777440307432_1_1" }}'
           sequence:
-          - device_id: fcee4dabc01f0e17b0ffd91195247fef
-            domain: light
-            type: toggle
-            entity_id: f5c19506bf5f9814c6f391901910aba9
+          - action: light.toggle
+            target:
+              entity_id: light.trillium
           - variables:
               current_node: END
         - conditions:
@@ -70,9 +69,12 @@
           y: 240
       graph_id: 732eb2ed-a365-4c82-97b4-72a46fe246be
       graph_version: 1
+# Basement Motion Lights Off — MIGRATED to packages/basement_lighting.yaml (2026-05-09)
+# Kept here as a tombstone. Do not re-enable. Delete after one successful reload cycle.
 - id: '1755885936052'
-  alias: Basement Motion Lights Off
-  description: ''
+  alias: Basement Motion Lights Off (MIGRATED)
+  description: 'Migrated to packages/basement_lighting.yaml — pkg_basement_lights_off'
+  enabled: false
   triggers:
   - type: not_occupied
     device_id: 74f84bb3ebadcdb829564a92354e6c7b
@@ -91,9 +93,12 @@
     target:
       area_id: basement
   mode: single
+
+# Basement Motion Lights On — MIGRATED to packages/basement_lighting.yaml (2026-05-09)
 - id: '1755886052898'
-  alias: Basement Motion Lights On
-  description: ''
+  alias: Basement Motion Lights On (MIGRATED)
+  description: 'Migrated to packages/basement_lighting.yaml — pkg_basement_lights_on'
+  enabled: false
   triggers:
   - type: occupied
     device_id: 74f84bb3ebadcdb829564a92354e6c7b
@@ -149,7 +154,8 @@
   mode: single
 - id: '1777064054568'
   alias: Toggle Trillium Power with entry button
-  description: ''
+  description: 'DISABLED — conflict resolved in LaunchPad Entry Button Trigger. Single press now handled there.'
+  enabled: false
   triggers:
   - device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
     domain: zha

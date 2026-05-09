@@ -1,0 +1,63 @@
+---
+description: Safety and workflow rules for AI-assisted Home Assistant management at LaunchPad
+alwaysApply: true
+---
+
+# Home Assistant AI Agent Rules
+
+This workspace is a live Home Assistant configuration (`/Volumes/config` = `/config` inside HA).
+Changes here affect a real, running smart home. Follow these rules without exception.
+
+## Absolute Prohibitions
+
+- **Never delete any file** — including old automations, unused scripts, or deprecated configs
+- **Never edit `secrets.yaml`** — it contains credentials; treat it as read-only
+- **Never expose secrets** — do not print, log, or include tokens, passwords, API keys, or private URLs in any output or file
+- **Never restart Home Assistant** without explicit user approval ("please restart HA")
+- **Never reload automations, scripts, scenes, or YAML** without explicit user approval
+- **Never modify Homeway/MCP configuration** in `configuration.yaml` — the blocks marked "Added By Homeway" are managed externally
+- **Never touch networking, backup, or security settings** without asking first
+
+## Inspect Before Editing
+
+1. Always read the target file before suggesting edits
+2. Always show a diff or before/after summary before applying any change
+3. Validate YAML structure mentally before suggesting any reload
+
+## Safe Change Patterns
+
+- Prefer **helpers** (`input_boolean`, `input_select`, `input_number`, `timer`, `counter`) over direct edits to `configuration.yaml`
+- Prefer **packages** (`/config/packages/`) for organizing new config blocks — do not add large blocks directly to `configuration.yaml`
+- Prefer **scripts** for reusable multi-step actions — keep automations thin
+- Use `!include` files (`automations.yaml`, `scripts.yaml`, `scenes.yaml`) for all automation/script/scene changes — do not inline them in `configuration.yaml`
+- Preserve all existing comments and formatting when editing YAML files
+- Make the smallest possible change — avoid refactoring what already works
+
+## Duplicate Prevention
+
+Before creating any new automation, script, scene, helper, or entity:
+- Search existing automations, scripts, and entities to confirm it doesn't already exist
+- Check for functionally equivalent automations that may be redundant
+- Do not create duplicate device trackers or person entities
+
+## Quality Checks
+
+- Confirm entity IDs by querying HA state — never guess from friendly names
+- Test template logic with `home_assistant_eval_template` before embedding in automations
+- For area/device targeting, verify area IDs via the area registry before using them
+
+## Approval Required For
+
+- Restarting or reloading Home Assistant
+- Any change to `configuration.yaml` beyond appending a new `!include`
+- Disabling or deleting automations, scenes, or scripts
+- Changes to integrations, add-ons, or Zigbee (ZHA) configuration
+- Changes to Homeway, WebRTC, Alexa, or Google Assistant config blocks
+- Any change affecting person tracking, device trackers, or presence detection
+- Any change to backup schedules or the `.storage/` directory
+
+## Git / Rollback
+
+- This config is version-controlled — every change should be small and describable in one commit message
+- After any edit session, remind the user to commit and push via the Git Config Backup add-on
+- Describe changes as "additive" or "refactor" so the user knows rollback risk
