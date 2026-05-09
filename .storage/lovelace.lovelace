@@ -4,35 +4,439 @@
   "key": "lovelace.lovelace",
   "data": {
     "config": {
+      "title": "LaunchPad",
       "views": [
         {
           "title": "Home",
+          "icon": "mdi:home-variant",
+          "type": "sections",
+          "max_columns": 3,
+          "badges": [],
           "sections": [
             {
               "type": "grid",
+              "column_span": 3,
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "New section"
+                  "heading": "LaunchPad",
+                  "heading_style": "title",
+                  "icon": "mdi:rocket-launch",
+                  "badges": [
+                    {
+                      "type": "entity",
+                      "entity": "person.space_cadets",
+                      "show_state": false
+                    },
+                    {
+                      "type": "entity",
+                      "entity": "person.isaac_norris",
+                      "show_state": false
+                    },
+                    {
+                      "type": "entity",
+                      "entity": "person.jared_lee_lyons",
+                      "show_state": false
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 3,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Quick Actions",
+                  "icon": "mdi:lightning-bolt"
+                },
+                {
+                  "type": "grid",
+                  "square": false,
+                  "columns": 4,
+                  "cards": [
+                    {
+                      "type": "tile",
+                      "name": "Stage On",
+                      "icon": "mdi:spotlight-beam",
+                      "color": "deep-purple",
+                      "tap_action": {
+                        "action": "call-service",
+                        "service": "switch.turn_on",
+                        "target": {
+                          "entity_id": [
+                            "switch.stage_lights_left",
+                            "switch.stage_lights_right",
+                            "switch.bar_lights"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "type": "tile",
+                      "name": "Stage Off",
+                      "icon": "mdi:spotlight",
+                      "color": "grey",
+                      "tap_action": {
+                        "action": "call-service",
+                        "service": "switch.turn_off",
+                        "target": {
+                          "entity_id": [
+                            "switch.stage_lights_left",
+                            "switch.stage_lights_right",
+                            "switch.bar_lights",
+                            "switch.dmx"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "type": "tile",
+                      "entity": "switch.p_a_speakers",
+                      "name": "PA Speakers",
+                      "icon": "mdi:speaker-multiple",
+                      "color": "green"
+                    },
+                    {
+                      "type": "tile",
+                      "name": "All Lights Off",
+                      "icon": "mdi:power",
+                      "color": "red",
+                      "tap_action": {
+                        "action": "call-service",
+                        "service": "homeassistant.turn_off",
+                        "target": {
+                          "entity_id": [
+                            "switch.stage_lights_left",
+                            "switch.stage_lights_right",
+                            "switch.bar_lights",
+                            "switch.dmx",
+                            "switch.desk_leds",
+                            "switch.earth",
+                            "switch.leg_lamp",
+                            "switch.front_right_lamp",
+                            "switch.red_desk_lamp",
+                            "switch.outdoor_white_lights",
+                            "switch.3d_printer_light",
+                            "switch.cnc_table_light",
+                            "switch.laser_station_light",
+                            "switch.clamp_lamp",
+                            "switch.paint_booth_light",
+                            "light.trillium"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 2,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Music",
+                  "icon": "mdi:music"
                 },
                 {
                   "type": "media-control",
                   "entity": "media_player.spotify_etcetre"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 1,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Who's Here",
+                  "icon": "mdi:account-group"
                 },
                 {
-                  "alert_classes": [
-                    "motion",
-                    "moisture"
-                  ],
-                  "sensor_classes": [
-                    "temperature",
-                    "humidity"
-                  ],
-                  "features_position": "bottom",
-                  "display_type": "picture",
-                  "type": "area",
-                  "area": "basement",
-                  "color": ""
+                  "type": "tile",
+                  "entity": "person.space_cadets",
+                  "color": "indigo"
+                },
+                {
+                  "type": "tile",
+                  "entity": "person.isaac_norris",
+                  "color": "indigo"
+                },
+                {
+                  "type": "tile",
+                  "entity": "person.jared_lee_lyons",
+                  "color": "indigo"
+                },
+                {
+                  "type": "tile",
+                  "entity": "assist_satellite.home_assistant_voice_0aab68_assist_satellite",
+                  "name": "MONA Voice",
+                  "icon": "mdi:robot",
+                  "color": "teal"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 1,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Art & WLED",
+                  "icon": "mdi:led-strip-variant"
+                },
+                {
+                  "type": "tile",
+                  "entity": "light.trillium",
+                  "name": "Trillium",
+                  "color": "orange"
+                },
+                {
+                  "type": "tile",
+                  "entity": "select.trillium_color_palette",
+                  "name": "Palette",
+                  "icon": "mdi:palette"
+                },
+                {
+                  "type": "tile",
+                  "entity": "select.trillium_preset",
+                  "name": "Preset",
+                  "icon": "mdi:star"
+                },
+                {
+                  "type": "tile",
+                  "entity": "number.trillium_speed",
+                  "name": "Speed",
+                  "icon": "mdi:speedometer"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.trillium_sync_send",
+                  "name": "Sync",
+                  "icon": "mdi:sync",
+                  "color": "amber"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 1,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Stage",
+                  "icon": "mdi:spotlight"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.stage_lights_left",
+                  "name": "Stage Left",
+                  "color": "deep-purple"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.stage_lights_right",
+                  "name": "Stage Right",
+                  "color": "deep-purple"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.bar_lights",
+                  "name": "Bar Lights",
+                  "color": "purple"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.dmx",
+                  "name": "DMX",
+                  "color": "purple",
+                  "icon": "mdi:led-strip"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 1,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Lounge",
+                  "icon": "mdi:sofa"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.ceiling_fan",
+                  "name": "Ceiling Fan",
+                  "icon": "mdi:ceiling-fan",
+                  "color": "cyan"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.earth",
+                  "name": "Earth",
+                  "icon": "mdi:earth",
+                  "color": "teal"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.desk_leds",
+                  "name": "Desk LEDs",
+                  "color": "teal"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.front_right_lamp",
+                  "name": "Front Lamp",
+                  "color": "amber"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.leg_lamp",
+                  "name": "Leg Lamp",
+                  "color": "amber"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.red_desk_lamp",
+                  "name": "Red Desk Lamp",
+                  "color": "red"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 2,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Workshop",
+                  "icon": "mdi:wrench"
+                },
+                {
+                  "type": "grid",
+                  "square": false,
+                  "columns": 3,
+                  "cards": [
+                    {
+                      "type": "tile",
+                      "entity": "switch.3d_printer_light",
+                      "name": "3D Printer",
+                      "icon": "mdi:printer-3d",
+                      "color": "blue"
+                    },
+                    {
+                      "type": "tile",
+                      "entity": "switch.cnc_table_light",
+                      "name": "CNC Table",
+                      "icon": "mdi:router",
+                      "color": "blue"
+                    },
+                    {
+                      "type": "tile",
+                      "entity": "switch.laser_station_light",
+                      "name": "Laser",
+                      "icon": "mdi:laser-pointer",
+                      "color": "blue"
+                    },
+                    {
+                      "type": "tile",
+                      "entity": "switch.clamp_lamp",
+                      "name": "Clamp Lamp",
+                      "icon": "mdi:lamp",
+                      "color": "blue-grey"
+                    },
+                    {
+                      "type": "tile",
+                      "entity": "switch.paint_booth_light",
+                      "name": "Paint Booth",
+                      "icon": "mdi:spray",
+                      "color": "blue-grey"
+                    },
+                    {
+                      "type": "tile",
+                      "entity": "switch.outdoor_white_lights",
+                      "name": "Outdoor",
+                      "icon": "mdi:outdoor-lamp",
+                      "color": "light-blue"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 1,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Bathroom & Basement",
+                  "icon": "mdi:home-floor-b"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.bathroom_mirror",
+                  "name": "Mirror",
+                  "icon": "mdi:mirror",
+                  "color": "light-blue"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.basement_light",
+                  "name": "Basement",
+                  "icon": "mdi:stairs-down",
+                  "color": "blue-grey"
+                },
+                {
+                  "type": "tile",
+                  "entity": "binary_sensor.motion_sensor_1_occupancy",
+                  "name": "Workshop Motion",
+                  "icon": "mdi:motion-sensor"
+                },
+                {
+                  "type": "tile",
+                  "entity": "binary_sensor.motion_sensor_2_occupancy",
+                  "name": "Bathroom Motion",
+                  "icon": "mdi:motion-sensor"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "Media",
+          "icon": "mdi:play-circle",
+          "type": "sections",
+          "max_columns": 2,
+          "badges": [],
+          "sections": [
+            {
+              "type": "grid",
+              "column_span": 2,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Media",
+                  "heading_style": "title",
+                  "icon": "mdi:play-circle"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 2,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Spotify",
+                  "icon": "mdi:spotify"
+                },
+                {
+                  "type": "media-control",
+                  "entity": "media_player.spotify_etcetre"
                 }
               ]
             },
@@ -41,119 +445,127 @@
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "New section"
-                },
-                {
-                  "type": "entities",
-                  "entities": [
-                    "binary_sensor.motion_sensor_1",
-                    {
-                      "entity": "binary_sensor.motion_sensor_1_occupancy",
-                      "name": "Occupancy"
-                    }
-                  ],
-                  "title": "Motion Sensor 1"
-                },
-                {
-                  "type": "entities",
-                  "entities": [
-                    "binary_sensor.motion_sensor_2",
-                    {
-                      "entity": "binary_sensor.motion_sensor_2_occupancy",
-                      "name": "Occupancy"
-                    }
-                  ],
-                  "title": "Motion Sensor 2"
-                }
-              ]
-            },
-            {
-              "type": "grid",
-              "cards": [
-                {
-                  "type": "heading",
-                  "heading": "New section"
-                }
-              ]
-            }
-          ],
-          "header": {
-            "card": {
-              "type": "markdown",
-              "content": "# Hello {{ user }}\n",
-              "text_only": true
-            }
-          },
-          "cards": [
-            {
-              "type": "entities",
-              "entities": [
-                "assist_satellite.assist_microphone"
-              ],
-              "title": "assist microphone"
-            },
-            {
-              "type": "grid",
-              "square": false,
-              "columns": 1,
-              "cards": [
-                {
-                  "type": "entities",
-                  "entities": [
-                    "remote.projector"
-                  ],
-                  "title": "Projector"
+                  "heading": "Projector",
+                  "icon": "mdi:projector"
                 },
                 {
                   "type": "media-control",
                   "entity": "media_player.projector"
+                },
+                {
+                  "type": "tile",
+                  "entity": "media_player.mission_control",
+                  "name": "Mission Control",
+                  "icon": "mdi:monitor"
                 }
               ]
             },
             {
-              "type": "entities",
-              "entities": [
-                "light.lightdrive_pico",
+              "type": "grid",
+              "cards": [
                 {
-                  "entity": "select.lightdrive_pico_playlist",
-                  "name": "Playlist"
+                  "type": "heading",
+                  "heading": "MONA Voice",
+                  "icon": "mdi:robot"
                 },
                 {
-                  "entity": "select.lightdrive_pico_preset",
-                  "name": "Preset"
+                  "type": "tile",
+                  "entity": "assist_satellite.home_assistant_voice_0aab68_assist_satellite",
+                  "name": "Voice Satellite",
+                  "icon": "mdi:microphone",
+                  "color": "teal"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.home_assistant_voice_0aab68_mute",
+                  "name": "Mute MONA",
+                  "icon": "mdi:microphone-off",
+                  "color": "red"
+                },
+                {
+                  "type": "tile",
+                  "entity": "select.home_assistant_voice_0aab68_wake_word",
+                  "name": "Wake Word",
+                  "icon": "mdi:ear-hearing"
+                },
+                {
+                  "type": "tile",
+                  "entity": "media_player.home_assistant_voice_0aab68_media_player",
+                  "name": "MONA Speaker",
+                  "icon": "mdi:speaker"
                 }
-              ],
-              "title": "LightDrive Pico"
+              ]
+            }
+          ]
+        },
+        {
+          "title": "System",
+          "icon": "mdi:cog",
+          "type": "sections",
+          "max_columns": 2,
+          "badges": [],
+          "sections": [
+            {
+              "type": "grid",
+              "column_span": 2,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "System",
+                  "heading_style": "title",
+                  "icon": "mdi:cog"
+                }
+              ]
             },
             {
-              "type": "entities",
-              "entities": [
+              "type": "grid",
+              "cards": [
                 {
-                  "entity": "select.wegoiot_led_controller_playlist",
-                  "name": "Playlist"
+                  "type": "heading",
+                  "heading": "Updates",
+                  "icon": "mdi:update"
                 },
                 {
-                  "entity": "select.wegoiot_led_controller_preset",
-                  "name": "Preset"
+                  "type": "tile",
+                  "entity": "update.home_assistant_core_update",
+                  "name": "HA Core",
+                  "color": "blue"
                 },
-                "light.wegoiot_led_controller"
-              ],
-              "title": "Test Lighdrive"
+                {
+                  "type": "tile",
+                  "entity": "update.home_assistant_operating_system_update",
+                  "name": "HA OS",
+                  "color": "blue"
+                },
+                {
+                  "type": "tile",
+                  "entity": "update.trillium_firmware",
+                  "name": "Trillium FW",
+                  "color": "orange"
+                }
+              ]
             },
             {
-              "type": "entities",
-              "entities": [
+              "type": "grid",
+              "cards": [
                 {
-                  "entity": "select.trillium_playlist",
-                  "name": "Playlist"
+                  "type": "heading",
+                  "heading": "Connectivity",
+                  "icon": "mdi:wifi"
                 },
                 {
-                  "entity": "select.trillium_preset",
-                  "name": "Preset"
+                  "type": "tile",
+                  "entity": "sensor.trillium_ip",
+                  "name": "Trillium IP",
+                  "icon": "mdi:ip-network"
                 },
-                "light.trillium"
-              ],
-              "title": "Trillium"
+                {
+                  "type": "tile",
+                  "entity": "sensor.trillium_led_count",
+                  "name": "Trillium LEDs",
+                  "icon": "mdi:led-strip-variant"
+                }
+              ]
             }
           ]
         }

@@ -1,0 +1,414 @@
+{
+  "version": 1,
+  "minor_version": 1,
+  "key": "lovelace.dashboard_main",
+  "data": {
+    "config": {
+      "title": "Controls",
+      "views": [
+        {
+          "title": "All Lights",
+          "icon": "mdi:lightbulb-group",
+          "type": "sections",
+          "max_columns": 3,
+          "badges": [],
+          "sections": [
+            {
+              "type": "grid",
+              "column_span": 3,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "All Lights & Switches",
+                  "heading_style": "title",
+                  "icon": "mdi:lightbulb-group"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Art & WLED",
+                  "icon": "mdi:led-strip-variant"
+                },
+                {
+                  "type": "tile",
+                  "entity": "light.trillium",
+                  "name": "Trillium",
+                  "color": "orange"
+                },
+                {
+                  "type": "tile",
+                  "entity": "select.trillium_color_palette",
+                  "name": "Palette",
+                  "icon": "mdi:palette"
+                },
+                {
+                  "type": "tile",
+                  "entity": "select.trillium_preset",
+                  "name": "Preset",
+                  "icon": "mdi:star"
+                },
+                {
+                  "type": "tile",
+                  "entity": "select.trillium_playlist",
+                  "name": "Playlist",
+                  "icon": "mdi:playlist-play"
+                },
+                {
+                  "type": "tile",
+                  "entity": "number.trillium_speed",
+                  "name": "Speed",
+                  "icon": "mdi:speedometer"
+                },
+                {
+                  "type": "tile",
+                  "entity": "number.trillium_intensity",
+                  "name": "Intensity",
+                  "icon": "mdi:brightness-6"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.trillium_sync_send",
+                  "name": "Sync Send",
+                  "icon": "mdi:sync",
+                  "color": "amber"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.trillium_sync_receive",
+                  "name": "Sync Receive",
+                  "icon": "mdi:sync",
+                  "color": "amber"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.trillium_nightlight",
+                  "name": "Nightlight",
+                  "icon": "mdi:weather-night"
+                },
+                {
+                  "type": "tile",
+                  "entity": "light.bulb_rgbw_c0c80d",
+                  "name": "Bulb RGBW",
+                  "color": "yellow"
+                },
+                {
+                  "type": "tile",
+                  "entity": "light.bulb_rgbw_8afe1a",
+                  "name": "Elephant Light",
+                  "icon": "mdi:elephant",
+                  "color": "yellow"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Stage",
+                  "icon": "mdi:spotlight"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.stage_lights_left",
+                  "name": "Stage Left",
+                  "color": "deep-purple"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.stage_lights_right",
+                  "name": "Stage Right",
+                  "color": "deep-purple"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.bar_lights",
+                  "name": "Bar Lights",
+                  "color": "purple"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.dmx",
+                  "name": "DMX",
+                  "color": "purple",
+                  "icon": "mdi:led-strip"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Lounge",
+                  "icon": "mdi:sofa"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.ceiling_fan",
+                  "name": "Ceiling Fan",
+                  "icon": "mdi:ceiling-fan",
+                  "color": "cyan"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.earth",
+                  "name": "Earth",
+                  "icon": "mdi:earth",
+                  "color": "teal"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.desk_leds",
+                  "name": "Desk LEDs",
+                  "color": "teal"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.front_right_lamp",
+                  "name": "Front Lamp",
+                  "color": "amber"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.leg_lamp",
+                  "name": "Leg Lamp",
+                  "color": "amber"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.red_desk_lamp",
+                  "name": "Red Desk Lamp",
+                  "color": "red"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Workshop",
+                  "icon": "mdi:wrench"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.3d_printer_light",
+                  "name": "3D Printer",
+                  "icon": "mdi:printer-3d",
+                  "color": "blue"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.cnc_table_light",
+                  "name": "CNC Table",
+                  "icon": "mdi:router",
+                  "color": "blue"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.laser_station_light",
+                  "name": "Laser Station",
+                  "icon": "mdi:laser-pointer",
+                  "color": "blue"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.clamp_lamp",
+                  "name": "Clamp Lamp",
+                  "icon": "mdi:lamp",
+                  "color": "blue-grey"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.paint_booth_light",
+                  "name": "Paint Booth",
+                  "icon": "mdi:spray",
+                  "color": "blue-grey"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Rooms & Outdoor",
+                  "icon": "mdi:home"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.bathroom_mirror",
+                  "name": "Bathroom Mirror",
+                  "icon": "mdi:mirror",
+                  "color": "light-blue"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.basement_light",
+                  "name": "Basement",
+                  "icon": "mdi:stairs-down",
+                  "color": "blue-grey"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.outdoor_white_lights",
+                  "name": "Outdoor Lights",
+                  "icon": "mdi:outdoor-lamp",
+                  "color": "light-blue"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.p_a_speakers",
+                  "name": "PA Speakers",
+                  "icon": "mdi:speaker-multiple",
+                  "color": "green"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "WLED Deep",
+          "icon": "mdi:led-strip-variant",
+          "type": "sections",
+          "max_columns": 2,
+          "badges": [],
+          "sections": [
+            {
+              "type": "grid",
+              "column_span": 2,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Trillium — Deep Controls",
+                  "heading_style": "title",
+                  "icon": "mdi:led-strip-variant"
+                },
+                {
+                  "type": "grid",
+                  "square": false,
+                  "columns": 2,
+                  "cards": [
+                    {
+                      "type": "tile",
+                      "entity": "light.trillium",
+                      "name": "Trillium",
+                      "color": "orange"
+                    },
+                    {
+                      "type": "tile",
+                      "entity": "switch.trillium_sync_send",
+                      "name": "Sync Send",
+                      "color": "amber"
+                    },
+                    {
+                      "type": "tile",
+                      "entity": "switch.trillium_sync_receive",
+                      "name": "Sync Receive",
+                      "color": "amber"
+                    },
+                    {
+                      "type": "tile",
+                      "entity": "switch.trillium_nightlight",
+                      "name": "Nightlight"
+                    },
+                    {
+                      "type": "tile",
+                      "entity": "switch.trillium_reverse",
+                      "name": "Reverse"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Effect Controls",
+                  "icon": "mdi:auto-fix"
+                },
+                {
+                  "type": "tile",
+                  "entity": "select.trillium_color_palette",
+                  "name": "Color Palette"
+                },
+                {
+                  "type": "tile",
+                  "entity": "select.trillium_preset",
+                  "name": "Preset"
+                },
+                {
+                  "type": "tile",
+                  "entity": "select.trillium_playlist",
+                  "name": "Playlist"
+                },
+                {
+                  "type": "tile",
+                  "entity": "select.trillium_live_override",
+                  "name": "Live Override"
+                },
+                {
+                  "type": "tile",
+                  "entity": "select.home_assistant_voice_0aab68_wake_word",
+                  "name": "Wake Word"
+                },
+                {
+                  "type": "tile",
+                  "entity": "number.trillium_speed",
+                  "name": "Speed"
+                },
+                {
+                  "type": "tile",
+                  "entity": "number.trillium_intensity",
+                  "name": "Intensity"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Device Info",
+                  "icon": "mdi:information"
+                },
+                {
+                  "type": "tile",
+                  "entity": "sensor.trillium_ip",
+                  "name": "IP Address",
+                  "icon": "mdi:ip-network"
+                },
+                {
+                  "type": "tile",
+                  "entity": "sensor.trillium_led_count",
+                  "name": "LED Count",
+                  "icon": "mdi:led-strip-variant"
+                },
+                {
+                  "type": "tile",
+                  "entity": "update.trillium_firmware",
+                  "name": "Firmware Update",
+                  "color": "blue"
+                },
+                {
+                  "type": "tile",
+                  "entity": "button.trillium_restart",
+                  "name": "Restart",
+                  "icon": "mdi:restart",
+                  "color": "red"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
