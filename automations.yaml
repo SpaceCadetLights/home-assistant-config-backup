@@ -20,7 +20,9 @@
       flow_context: {}
   - alias: State Machine Loop
     repeat:
-      until: '{{ current_node == "END" }}'
+      until:
+      - condition: template
+        value_template: '{{ current_node == "END" }}'
       sequence:
       - choose:
         - conditions:
@@ -49,6 +51,11 @@
           action: system_log.write
         - variables:
             current_node: END
+  - action: conversation.process
+    metadata: {}
+    data:
+      text: If Spotify is playing pause it if Spotify is paused play it.
+      agent_id: conversation.homeway_sage_free_chatgpt_gemini
   mode: single
   variables:
     _cafe_metadata:
@@ -69,11 +76,9 @@
           y: 240
       graph_id: 732eb2ed-a365-4c82-97b4-72a46fe246be
       graph_version: 1
-# Basement Motion Lights Off — MIGRATED to packages/basement_lighting.yaml (2026-05-09)
-# Kept here as a tombstone. Do not re-enable. Delete after one successful reload cycle.
 - id: '1755885936052'
   alias: Basement Motion Lights Off (MIGRATED)
-  description: 'Migrated to packages/basement_lighting.yaml — pkg_basement_lights_off'
+  description: Migrated to packages/basement_lighting.yaml — pkg_basement_lights_off
   enabled: false
   triggers:
   - type: not_occupied
@@ -93,11 +98,9 @@
     target:
       area_id: basement
   mode: single
-
-# Basement Motion Lights On — MIGRATED to packages/basement_lighting.yaml (2026-05-09)
 - id: '1755886052898'
   alias: Basement Motion Lights On (MIGRATED)
-  description: 'Migrated to packages/basement_lighting.yaml — pkg_basement_lights_on'
+  description: Migrated to packages/basement_lighting.yaml — pkg_basement_lights_on
   enabled: false
   triggers:
   - type: occupied
@@ -154,7 +157,8 @@
   mode: single
 - id: '1777064054568'
   alias: Toggle Trillium Power with entry button
-  description: 'DISABLED — conflict resolved in LaunchPad Entry Button Trigger. Single press now handled there.'
+  description: DISABLED — conflict resolved in LaunchPad Entry Button Trigger. Single
+    press now handled there.
   enabled: false
   triggers:
   - device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
