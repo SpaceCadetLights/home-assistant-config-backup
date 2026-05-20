@@ -1,5 +1,16 @@
 {
   "_remote_build": {
     "dashboard_id": "Vru503onOiJO0V4WYTFurTVevEMfFf8E"
+  },
+  "_preferences": {
+    "dashboard_view": "cards",
+    "theme": "system",
+    "navigator_visible": true,
+    "yaml_diff_button": false,
+    "table_page_size": 25,
+    "table_column_visibility": {},
+    "table_sort_column": null,
+    "table_sort_direction": null,
+    "onboarding_completed_version": 1
   }
 }
