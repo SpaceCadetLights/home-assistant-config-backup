@@ -1,0 +1,423 @@
+{
+  "version": 1,
+  "minor_version": 1,
+  "key": "lovelace.putt_putt_control",
+  "data": {
+    "config": {
+      "title": "Putt Putt Control",
+      "views": [
+        {
+          "title": "Operations",
+          "icon": "mdi:golf",
+          "type": "sections",
+          "max_columns": 2,
+          "theme": "Puttway Night",
+          "sections": [
+            {
+              "type": "grid",
+              "column_span": 2,
+              "cards": [
+                {
+                  "type": "markdown",
+                  "content": "<h1 style=\"text-align: center; font-size: 2.4em; letter-spacing: 0.06em; padding: 12px 0 4px;\">Blue Ridge Puttway</h1>"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 2,
+              "title": "Course Control",
+              "cards": [
+                {
+                  "type": "tile",
+                  "entity": "script.puttway_course_on",
+                  "name": "COURSE ON",
+                  "icon": "mdi:play-circle-outline",
+                  "color": "green",
+                  "tap_action": {
+                    "action": "perform-action",
+                    "perform_action": "script.turn_on",
+                    "data": {
+                      "entity_id": "script.puttway_course_on"
+                    }
+                  }
+                },
+                {
+                  "type": "tile",
+                  "entity": "script.puttway_course_off",
+                  "name": "COURSE OFF",
+                  "icon": "mdi:stop-circle-outline",
+                  "color": "red",
+                  "tap_action": {
+                    "action": "perform-action",
+                    "perform_action": "script.turn_on",
+                    "data": {
+                      "entity_id": "script.puttway_course_off"
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 2,
+              "title": "Music & Sound Effects",
+              "cards": [
+                {
+                  "type": "media-control",
+                  "entity": "media_player.home_assistant_audio_output",
+                  "name": "Background Music"
+                },
+                {
+                  "type": "media-control",
+                  "entity": "media_player.vlc_sound_effect_player",
+                  "name": "SFX Player"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 1,
+              "title": "Interactivity",
+              "cards": [
+                {
+                  "type": "tile",
+                  "entity": "input_boolean.puttway_course_active",
+                  "name": "Interactivity Enabled",
+                  "icon": "mdi:motion-sensor",
+                  "color": "teal"
+                },
+                {
+                  "type": "tile",
+                  "entity": "input_boolean.puttway_sound_effects_enabled",
+                  "name": "Sound Effects",
+                  "icon": "mdi:volume-high",
+                  "color": "indigo"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 1,
+              "title": "Water Features",
+              "cards": [
+                {
+                  "type": "tile",
+                  "entity": "switch.roaring_fork_falls_pump",
+                  "name": "Roaring Fork Falls Pump",
+                  "icon": "mdi:water-pump",
+                  "color": "cyan"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.looking_glass_falls",
+                  "name": "Looking Glass Falls",
+                  "icon": "mdi:water",
+                  "color": "cyan"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 2,
+              "title": "Pendulum Motor",
+              "cards": [
+                {
+                  "type": "tile",
+                  "entity": "light.pendulum_swing",
+                  "name": "PENDULUM ON",
+                  "icon": "mdi:metronome",
+                  "color": "amber",
+                  "tap_action": {
+                    "action": "call-service",
+                    "service": "light.turn_on",
+                    "service_data": {
+                      "entity_id": "light.pendulum_swing"
+                    }
+                  }
+                },
+                {
+                  "type": "tile",
+                  "entity": "light.pendulum_swing",
+                  "name": "PENDULUM OFF",
+                  "icon": "mdi:metronome",
+                  "color": "grey",
+                  "tap_action": {
+                    "action": "call-service",
+                    "service": "light.turn_off",
+                    "service_data": {
+                      "entity_id": "light.pendulum_swing"
+                    }
+                  }
+                },
+                {
+                  "type": "button",
+                  "name": "Normal Speed",
+                  "icon": "mdi:metronome",
+                  "icon_height": "28px",
+                  "show_state": false,
+                  "tap_action": {
+                    "action": "perform-action",
+                    "perform_action": "script.turn_on",
+                    "data": {
+                      "entity_id": "script.puttway_pendulum_normal"
+                    }
+                  }
+                },
+                {
+                  "type": "button",
+                  "name": "Fast Speed",
+                  "icon": "mdi:metronome-tick",
+                  "icon_height": "28px",
+                  "show_state": false,
+                  "tap_action": {
+                    "action": "perform-action",
+                    "perform_action": "script.turn_on",
+                    "data": {
+                      "entity_id": "script.puttway_pendulum_fast"
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 2,
+              "title": "Water Wheel",
+              "cards": [
+                {
+                  "type": "tile",
+                  "entity": "light.water_wheel",
+                  "name": "Water Wheel",
+                  "icon": "mdi:ferris-wheel",
+                  "color": "cyan",
+                  "features": [
+                    {
+                      "type": "light-brightness"
+                    }
+                  ]
+                },
+                {
+                  "type": "button",
+                  "name": "Easy — 5 RPM",
+                  "icon": "mdi:tortoise",
+                  "icon_height": "24px",
+                  "show_state": false,
+                  "tap_action": {
+                    "action": "perform-action",
+                    "perform_action": "script.turn_on",
+                    "data": {
+                      "entity_id": "script.puttway_water_wheel_easy"
+                    }
+                  }
+                },
+                {
+                  "type": "button",
+                  "name": "Normal — 17 RPM",
+                  "icon": "mdi:speedometer-medium",
+                  "icon_height": "24px",
+                  "show_state": false,
+                  "tap_action": {
+                    "action": "perform-action",
+                    "perform_action": "script.turn_on",
+                    "data": {
+                      "entity_id": "script.puttway_water_wheel_normal"
+                    }
+                  }
+                },
+                {
+                  "type": "button",
+                  "name": "Hard — 30 RPM",
+                  "icon": "mdi:speedometer",
+                  "icon_height": "24px",
+                  "show_state": false,
+                  "tap_action": {
+                    "action": "perform-action",
+                    "perform_action": "script.turn_on",
+                    "data": {
+                      "entity_id": "script.puttway_water_wheel_hard"
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 2,
+              "title": "Nebula Lighting",
+              "cards": [
+                {
+                  "type": "tile",
+                  "entity": "light.viaduct",
+                  "name": "Viaduct",
+                  "icon": "mdi:led-strip-variant"
+                },
+                {
+                  "type": "tile",
+                  "entity": "light.large_cloud",
+                  "name": "Large Cloud",
+                  "icon": "mdi:led-strip-variant"
+                },
+                {
+                  "type": "tile",
+                  "entity": "light.roaring_fork_falls",
+                  "name": "Roaring Fork Falls",
+                  "icon": "mdi:led-strip-variant"
+                },
+                {
+                  "type": "tile",
+                  "entity": "light.into_the_woods_flowers",
+                  "name": "Into The Woods Flowers",
+                  "icon": "mdi:led-strip-variant"
+                },
+                {
+                  "type": "tile",
+                  "entity": "light.looking_glass_falls",
+                  "name": "Looking Glass Falls",
+                  "icon": "mdi:led-strip-variant"
+                },
+                {
+                  "type": "tile",
+                  "entity": "light.mount_mitchell",
+                  "name": "Mount Mitchell",
+                  "icon": "mdi:led-strip-variant"
+                },
+                {
+                  "type": "tile",
+                  "entity": "light.grandfather_clock_mountain",
+                  "name": "Grandfather Clock Mountain",
+                  "icon": "mdi:led-strip-variant"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 1,
+              "title": "Motion Sensors",
+              "cards": [
+                {
+                  "type": "tile",
+                  "entity": "binary_sensor.motion_sensor_1_motion_sensor_1_motion",
+                  "name": "Motion Sensor 1",
+                  "icon": "mdi:motion-sensor",
+                  "color": "deep-orange"
+                },
+                {
+                  "type": "tile",
+                  "entity": "binary_sensor.motion_sensor_2_motion_sensor_2_motion",
+                  "name": "Motion Sensor 2",
+                  "icon": "mdi:motion-sensor",
+                  "color": "deep-orange"
+                },
+                {
+                  "type": "tile",
+                  "entity": "binary_sensor.motion_sensor_3_motion_sensor_3_inpout_1",
+                  "name": "Motion Sensor 3",
+                  "icon": "mdi:motion-sensor",
+                  "color": "deep-orange"
+                },
+                {
+                  "type": "tile",
+                  "entity": "binary_sensor.motion_sensor_4_motion_sensor_4_input_1",
+                  "name": "Motion Sensor 4",
+                  "icon": "mdi:motion-sensor",
+                  "color": "deep-orange"
+                },
+                {
+                  "type": "tile",
+                  "entity": "binary_sensor.lightdrive_pico_pendulum_motion_sensor_input",
+                  "name": "Pendulum Motion",
+                  "icon": "mdi:motion-sensor",
+                  "color": "deep-orange"
+                },
+                {
+                  "type": "tile",
+                  "entity": "binary_sensor.lightdrive_pico_pendulum_pendulum_impact_detected",
+                  "name": "Pendulum Impact",
+                  "icon": "mdi:vibrate",
+                  "color": "red"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 1,
+              "title": "Diagnostics",
+              "cards": [
+                {
+                  "type": "tile",
+                  "entity": "binary_sensor.lightdrive_pico_pendulum_button_1",
+                  "name": "Pendulum Button 1",
+                  "icon": "mdi:gesture-tap-button"
+                },
+                {
+                  "type": "tile",
+                  "entity": "binary_sensor.lightdrive_pico_pendulum_button_2",
+                  "name": "Pendulum Button 2",
+                  "icon": "mdi:gesture-tap-button"
+                },
+                {
+                  "type": "tile",
+                  "entity": "binary_sensor.rpi_power_status",
+                  "name": "RPi Power",
+                  "icon": "mdi:raspberry-pi"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 2,
+              "title": "Quick Access",
+              "cards": [
+                {
+                  "type": "button",
+                  "name": "Edit Automations",
+                  "icon": "mdi:robot",
+                  "icon_height": "36px",
+                  "show_state": false,
+                  "tap_action": {
+                    "action": "navigate",
+                    "navigation_path": "/config/automation"
+                  }
+                },
+                {
+                  "type": "button",
+                  "name": "Edit Scripts",
+                  "icon": "mdi:script-text",
+                  "icon_height": "36px",
+                  "show_state": false,
+                  "tap_action": {
+                    "action": "navigate",
+                    "navigation_path": "/config/script"
+                  }
+                },
+                {
+                  "type": "button",
+                  "name": "Edit Helpers",
+                  "icon": "mdi:tune",
+                  "icon_height": "36px",
+                  "show_state": false,
+                  "tap_action": {
+                    "action": "navigate",
+                    "navigation_path": "/config/helpers"
+                  }
+                },
+                {
+                  "type": "button",
+                  "name": "System Log",
+                  "icon": "mdi:math-log",
+                  "icon_height": "36px",
+                  "show_state": false,
+                  "tap_action": {
+                    "action": "navigate",
+                    "navigation_path": "/config/logs"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

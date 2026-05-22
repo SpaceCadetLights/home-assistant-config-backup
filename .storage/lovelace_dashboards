@@ -29,6 +29,15 @@
         "mode": "storage",
         "show_in_sidebar": true,
         "require_admin": false
+      },
+      {
+        "id": "putt_putt_control",
+        "url_path": "putt-putt-control",
+        "mode": "storage",
+        "title": "Putt Putt Control",
+        "icon": "mdi:golf",
+        "show_in_sidebar": true,
+        "require_admin": false
       }
     ]
   }
