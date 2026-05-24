@@ -1,0 +1,9513 @@
+/*!
+ * spatial-light-color-card — Home Assistant Lovelace custom card.
+ * Repository: https://github.com/Mihonarium/hass-spatial-lights-card
+ * License:    MIT
+ */
+
+class SpatialLightColorCard extends HTMLElement {
+  // Color modes that indicate an actual RGB color choice (not pure temperature).
+  static RGB_COLOR_MODES = new Set(['hs', 'rgb', 'xy', 'rgbw', 'rgbww']);
+  // Tolerance (sRGB Euclidean distance) for grouping live colors and matching active presets.
+  static COLOR_TOLERANCE = 30;
+  // Tolerance (Kelvin) for grouping live temperatures and matching active temp presets.
+  static TEMP_TOLERANCE = 100;
+
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+
+    /** Core state */
+    this._config = {};
+    this._hass = null;
+
+    /** Selection & interactions */
+    this._selectedLights = new Set();
+    this._dragState = null;             // { entity, startX, startY, initialLeft, initialTop, rect, moved }
+    this._selectionBox = null;          // HTMLElement for rubberband selection
+    this._selectionStart = null;        // { x, y } in canvas coords
+    this._selectionModeAdditive = false;
+    this._selectionBase = null;
+
+    /** UI state */
+    this._yamlModalOpen = false;
+
+    /** History (positions undo/redo) */
+    this._history = [];
+    this._historyIndex = -1;
+
+    /** Pending user inputs (debounced applies) */
+    this._pendingBrightness = null;
+    this._pendingTemperature = null;
+    this._pendingColor = null;
+
+    /**
+     * Set to 'brightness' or 'temperature' while the user is mid-drag on a
+     * slider. `_updateControlValues` skips writing `el.value` for the active
+     * slider so HA state pushes don't fight the user's finger.
+     */
+    this._activeSliderGesture = null;
+
+    /** Settings */
+    this._gridSize = 25;
+    this._snapOnModifier = true;  // if true, requires Alt key to snap
+    this._lockPositions = true;
+    this._iconRefreshHandle = null;
+    this._iconRehydrateHandle = null;
+
+    /** Animation frame / batching */
+    this._raf = null;
+    this._colorWheelActive = false;
+    this._colorWheelObserver = null;
+    this._canvasObserver = null;
+    this._colorWheelFrame = null;
+    this._colorWheelLastSize = null;
+    this._colorWheelCancel = null;
+    this._colorWheelGesture = null;    // { pointerId, isTouch, startScroll: {x,y}, scrolled, pendingColor }
+
+    /** Large color wheel (long-press) */
+    this._largeColorWheelOpen = false;
+    this._largeColorWheelOpenedAt = 0;
+    this._colorWheelLongPressTimer = null;
+    this._colorWheelLongPressStart = null;
+    this._colorWheelLongPressed = false;
+    this._largeWheelGesture = null;
+
+    /** Cached DOM refs (stable after first render) */
+    this._els = {
+      canvas: null,
+      controlsFloating: null,
+      controlsBelow: null,
+      brightnessSlider: null,
+      brightnessValue: null,
+      temperatureSlider: null,
+      temperatureValue: null,
+      colorWheel: null,
+      yamlModal: null,
+      yamlOutput: null,
+      colorWheelOverlay: null,
+      colorWheelLarge: null,
+      colorWheelMagnifier: null,
+      colorWheelMagnifierCanvas: null,
+      colorWheelPreviewSwatch: null,
+    };
+
+    /** Global bindings */
+    this._boundKeyDown = null;
+    this._boundIconsetAdded = null;
+    this._boundMoreInfo = null;
+    this._boundVisibilityChange = null;
+    this._boundWindowBlur = null;
+
+    /** Touch affordances */
+    this._longPressTimer = null;
+    this._longPressTriggered = false;
+    this._pendingTap = null;
+    this._lastTap = null;
+
+    /** Overlay coordination */
+    this._moreInfoOpen = false;
+
+    /** Canvas elements (non-entity: links, sensors, templates) */
+    this._templateSubscriptions = new Map();   // element id → unsubscribe fn
+    this._templateResults = new Map();          // element id → rendered string
+    this._pendingElementTap = null;             // { elementId, pointerId, startX, startY, pointerType }
+    this._elementLongPressTimer = null;
+    this._elementLongPressTriggered = false;
+    this._elementTapTimeout = null;
+    this._lastElementTap = null;                // { elementId, time }
+
+    /**
+     * Zigbee2MQTT group detection. Z2M auto-exposes its groups as `light.*`
+     * MQTT entities whose entity-registry `capabilities.group_entities` lists
+     * the member entity IDs. Addressing the group entity triggers a single
+     * Zigbee groupcast — all bulbs respond simultaneously, which a flat
+     * `entity_id: [array]` cannot achieve no matter how it's batched.
+     */
+    this._zigbeeGroups = null;            // Map<sortedMemberKey, groupEntityId>
+    this._zigbeeGroupsLoading = false;
+    this._zigbeeGroupsLoaded = false;
+    this._zigbeeGroupsUnsub = null;       // entity_registry_updated unsubscribe
+    this._zigbeeGroupsRefreshTimer = null;
+  }
+
+  /** Home Assistant integration */
+  setConfig(config) {
+    if (!config.entities || !Array.isArray(config.entities)) {
+      throw new Error('You must specify entities as an array');
+    }
+
+    const normalizedPositions = {};
+    if (config.positions && typeof config.positions === 'object') {
+      Object.entries(config.positions).forEach(([entity, pos]) => {
+        if (!pos || typeof pos !== 'object') return;
+        const x = typeof pos.x === 'number' ? pos.x : parseFloat(pos.x);
+        const y = typeof pos.y === 'number' ? pos.y : parseFloat(pos.y);
+        if (Number.isFinite(x) && Number.isFinite(y)) {
+          normalizedPositions[entity] = { x, y };
+        }
+      });
+    }
+
+    let tempMin = null;
+    let tempMax = null;
+    if (Array.isArray(config.temperature_range) && config.temperature_range.length === 2) {
+      const [minVal, maxVal] = config.temperature_range;
+      tempMin = typeof minVal === 'number' ? minVal : parseFloat(minVal);
+      tempMax = typeof maxVal === 'number' ? maxVal : parseFloat(maxVal);
+    } else if (config.temperature_range && typeof config.temperature_range === 'object') {
+      const { min, max } = config.temperature_range;
+      tempMin = typeof min === 'number' ? min : parseFloat(min);
+      tempMax = typeof max === 'number' ? max : parseFloat(max);
+    }
+    if (config.temperature_min != null && !Number.isNaN(parseFloat(config.temperature_min))) {
+      tempMin = parseFloat(config.temperature_min);
+    }
+    if (config.temperature_max != null && !Number.isNaN(parseFloat(config.temperature_max))) {
+      tempMax = parseFloat(config.temperature_max);
+    }
+
+    const backgroundImage = this._normalizeBackgroundImage(config.background_image);
+
+    // Normalize light_size (can be number for pixels)
+    const lightSize = config.light_size != null ? parseInt(config.light_size, 10) : 56;
+    const normalizedLightSize = Number.isFinite(lightSize) && lightSize > 0 ? lightSize : 56;
+
+    // Normalize size_overrides (per-entity sizes)
+    const sizeOverrides = {};
+    if (config.size_overrides && typeof config.size_overrides === 'object') {
+      Object.entries(config.size_overrides).forEach(([entity, size]) => {
+        const parsed = parseInt(size, 10);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          sizeOverrides[entity] = parsed;
+        }
+      });
+    }
+
+    // Normalize icon_only_overrides (per-entity icon-only mode)
+    const iconOnlyOverrides = {};
+    if (config.icon_only_overrides && typeof config.icon_only_overrides === 'object') {
+      Object.entries(config.icon_only_overrides).forEach(([entity, val]) => {
+        iconOnlyOverrides[entity] = Boolean(val);
+      });
+    }
+
+    this._config = {
+      entities: config.entities,
+      positions: normalizedPositions,
+      title: config.title || '',
+      canvas_height: config.canvas_height ?? 450,
+      grid_size: config.grid_size ?? 25,
+      label_mode: config.label_mode || 'smart',
+      label_overrides: config.label_overrides || {},
+      always_show_controls: config.always_show_controls || false,
+      default_entity: config.default_entity || null,
+      controls_below: config.controls_below !== false,
+      show_entity_icons: config.show_entity_icons !== false,
+      switch_single_tap: config.switch_single_tap || false,
+      icon_style: config.icon_style || 'mdi', // 'mdi' or 'emoji' (emoji kept as fallback only)
+      temperature_min: Number.isFinite(tempMin) ? tempMin : null,
+      temperature_max: Number.isFinite(tempMax) ? tempMax : null,
+      background_image: backgroundImage,
+
+      // Light size customization
+      light_size: normalizedLightSize,
+      size_overrides: sizeOverrides,
+
+      // Minimal UI mode (hides circles completely except when selected)
+      minimal_ui: config.minimal_ui || false,
+
+      // Icon-only mode (shows just icons without filled circles)
+      // Automatically enabled when minimal_ui is true
+      icon_only_mode: config.minimal_ui || config.icon_only_mode || false,
+      icon_only_overrides: iconOnlyOverrides,
+
+      // Icon rotation (degrees, 0-360) and mirroring (horizontal/vertical/both/none)
+      icon_rotation: Number.isFinite(Number(config.icon_rotation)) ? Number(config.icon_rotation) : 0,
+      icon_rotation_overrides: this._normalizeNumberOverrides(config.icon_rotation_overrides),
+      icon_mirror: ['horizontal', 'vertical', 'both'].includes(config.icon_mirror) ? config.icon_mirror : 'none',
+      icon_mirror_overrides: this._normalizeMirrorOverrides(config.icon_mirror_overrides),
+
+      // Directional glow configuration (minimal-ui mode)
+      glow: this._normalizeGlowConfig(config.glow),
+      glow_overrides: this._normalizeGlowOverrides(config.glow_overrides),
+
+      // Color customization
+      switch_on_color: config.switch_on_color || '#ffa500',
+      switch_off_color: config.switch_off_color || '#3a3a3a',
+      scene_color: config.scene_color || '#6366f1',
+      binary_sensor_on_color: config.binary_sensor_on_color || '#4caf50',
+      binary_sensor_off_color: config.binary_sensor_off_color || '#2a2a2a',
+      color_overrides: config.color_overrides || {},
+
+      // Color presets (array of hex color strings shown as quick-select circles)
+      color_presets: Array.isArray(config.color_presets)
+        ? config.color_presets.filter(c => typeof c === 'string' && c.trim()).map(c => c.trim())
+        : [],
+      show_live_colors: config.show_live_colors === true,
+
+      // Effect presets (array of {effect, icon?} shown as icon circles next to color presets)
+      effect_presets: Array.isArray(config.effect_presets)
+        ? config.effect_presets
+            .filter(e => e && typeof e === 'object' && typeof e.effect === 'string' && e.effect.trim())
+            .map(e => ({
+              effect: e.effect.trim(),
+              icon: (typeof e.icon === 'string' && e.icon.trim()) ? e.icon.trim() : 'mdi:auto-fix',
+              lights: Array.isArray(e.lights) ? e.lights.filter(l => typeof l === 'string' && l.trim()).map(l => l.trim()) : [],
+              filter_default: ['any', 'all'].includes(e.filter_default) ? e.filter_default : '',
+              filter_selected: ['any', 'all'].includes(e.filter_selected) ? e.filter_selected : '',
+            }))
+        : [],
+      // Effect filtering mode: 'any' = show if available on any light, 'all' = only if on all lights
+      effect_filter_default: ['any', 'all'].includes(config.effect_filter_default) ? config.effect_filter_default : 'any',
+      effect_filter_selected: ['any', 'all'].includes(config.effect_filter_selected) ? config.effect_filter_selected : 'all',
+
+      // Canvas elements (non-entity elements: links, sensors, templates)
+      canvas_elements: this._normalizeCanvasElements(config.canvas_elements),
+
+      // Custom CSS injection (global string appended to shadow DOM styles)
+      custom_css: typeof config.custom_css === 'string' ? config.custom_css : '',
+
+      // Per-entity inline style overrides (entity_id → CSS properties string)
+      style_overrides: this._normalizeStyleOverrides(config.style_overrides),
+
+      // Glow walls — line segments or boxes that block glow from expanding
+      glow_walls: this._normalizeGlowWalls(config.glow_walls),
+    };
+
+    // Bump wall config version to invalidate per-entity wall mask caches
+    this._wallConfigVersion = (this._wallConfigVersion || 0) + 1;
+    this._wallMaskPerEntity = {};
+    if (this._wallMaskCache) this._wallMaskCache.clear();
+
+    this._gridSize = this._config.grid_size;
+
+    // Editor-driven position editing mode
+    this._editPositionsMode = !!config._edit_positions;
+    this._editorId = config._editor_id || null;
+
+    this._initializePositions();
+
+    // Clear caches on config change
+    this._canvasElementCache = null;
+    this._customMaskCache = null;
+    this._wallMaskCache = null;
+
+    // Re-render if hass is already available (config changed after first render)
+    if (this._hass) {
+      this._renderAll();
+    }
+  }
+
+  _normalizeNumberOverrides(obj) {
+    const result = {};
+    if (obj && typeof obj === 'object') {
+      Object.entries(obj).forEach(([entity, val]) => {
+        const num = Number(val);
+        if (Number.isFinite(num)) result[entity] = num;
+      });
+    }
+    return result;
+  }
+
+  _normalizeMirrorOverrides(obj) {
+    const result = {};
+    if (obj && typeof obj === 'object') {
+      Object.entries(obj).forEach(([entity, val]) => {
+        if (['horizontal', 'vertical', 'both', 'none'].includes(val)) {
+          result[entity] = val;
+        }
+      });
+    }
+    return result;
+  }
+
+  /** Valid glow shape names. */
+  static get GLOW_SHAPES() {
+    return ['cone', 'semicone', 'round', 'oval', 'beam', 'spotlight', 'bar', 'custom'];
+  }
+
+  /** Valid glow falloff modes. */
+  static get GLOW_FALLOFFS() {
+    return ['smooth', 'linear', 'exponential', 'sharp', 'uniform'];
+  }
+
+  /** Normalize a single glow config object, filling in defaults. */
+  _normalizeGlowConfig(obj) {
+    const defaults = {
+      enabled: false,
+      shape: 'cone',            // cone, semicone, round, oval, beam, spotlight, bar
+      direction: 0,             // 0=down, 90=right, 180=up, 270=left
+      length: 80,               // max length in px (height for directional shapes, diameter for round)
+      width: 60,                // spread width in px
+      intensity: 0.7,           // max opacity (0-1)
+      blur: 12,                 // blur radius in px
+      offset_x: 0,              // horizontal offset from center
+      offset_y: 0,              // vertical offset from center
+      spread: 1.5,              // far-end width multiplier (1=no spread)
+      start_width: 0,           // 0-1: width fraction at origin (0=point, 0.5=half-width) — used by semicone
+      scale_with_brightness: true,
+      color: null,              // null = use entity color
+      edge_softness: 0,         // 0-1: how soft/feathered the edges of the shape are
+      falloff: 'smooth',        // smooth, linear, exponential, sharp — gradient curve
+      gradient_stops: null,     // custom array of [position%, opacity] e.g. [[0, 1], [50, 0.3], [100, 0]]
+      custom_shape: null,       // polar coords: [[angle°, radius 0-1], ...] — used with shape:'custom'
+    };
+    if (!obj || typeof obj !== 'object') return defaults;
+    return {
+      enabled: obj.enabled === true,
+      shape: SpatialLightColorCard.GLOW_SHAPES.includes(obj.shape) ? obj.shape : defaults.shape,
+      direction: Number.isFinite(Number(obj.direction)) ? Number(obj.direction) : defaults.direction,
+      length: Number.isFinite(Number(obj.length)) && Number(obj.length) > 0 ? Number(obj.length) : defaults.length,
+      width: Number.isFinite(Number(obj.width)) && Number(obj.width) > 0 ? Number(obj.width) : defaults.width,
+      intensity: Number.isFinite(Number(obj.intensity)) ? Math.max(0, Math.min(1, Number(obj.intensity))) : defaults.intensity,
+      blur: Number.isFinite(Number(obj.blur)) && Number(obj.blur) >= 0 ? Number(obj.blur) : defaults.blur,
+      offset_x: Number.isFinite(Number(obj.offset_x)) ? Number(obj.offset_x) : defaults.offset_x,
+      offset_y: Number.isFinite(Number(obj.offset_y)) ? Number(obj.offset_y) : defaults.offset_y,
+      spread: Number.isFinite(Number(obj.spread)) && Number(obj.spread) > 0 ? Number(obj.spread) : defaults.spread,
+      start_width: Number.isFinite(Number(obj.start_width)) ? Math.max(0, Math.min(1, Number(obj.start_width))) : defaults.start_width,
+      scale_with_brightness: obj.scale_with_brightness !== false,
+      color: typeof obj.color === 'string' && obj.color.trim() ? obj.color.trim() : null,
+      edge_softness: Number.isFinite(Number(obj.edge_softness)) ? Math.max(0, Math.min(1, Number(obj.edge_softness))) : defaults.edge_softness,
+      falloff: SpatialLightColorCard.GLOW_FALLOFFS.includes(obj.falloff) ? obj.falloff : defaults.falloff,
+      gradient_stops: this._normalizeGradientStops(obj.gradient_stops),
+      custom_shape: this._normalizeCustomShape(obj.custom_shape),
+    };
+  }
+
+  /** Normalize custom gradient stops: array of [position%, opacity] tuples. */
+  _normalizeGradientStops(stops) {
+    if (!Array.isArray(stops) || stops.length < 2) return null;
+    const result = [];
+    for (const stop of stops) {
+      if (!Array.isArray(stop) || stop.length < 2) continue;
+      const pos = Number(stop[0]);
+      const opacity = Number(stop[1]);
+      if (Number.isFinite(pos) && Number.isFinite(opacity)) {
+        result.push([Math.max(0, Math.min(100, pos)), Math.max(0, Math.min(1, opacity))]);
+      }
+    }
+    return result.length >= 2 ? result : null;
+  }
+
+  /**
+   * Normalize custom_shape: array of [angleDeg, radiusFraction] polar points.
+   * Angle 0 = forward direction (down by default), clockwise.
+   * Radius 0 = center, 1 = full extent.
+   * Minimum 3 points required to define a shape.
+   */
+  _normalizeCustomShape(shape) {
+    if (!Array.isArray(shape) || shape.length < 3) return null;
+    const result = [];
+    for (const point of shape) {
+      if (!Array.isArray(point) || point.length < 2) continue;
+      const angle = Number(point[0]);
+      const radius = Number(point[1]);
+      if (Number.isFinite(angle) && Number.isFinite(radius)) {
+        result.push([((angle % 360) + 360) % 360, Math.max(0, Math.min(2, radius))]);
+      }
+    }
+    return result.length >= 3 ? result : null;
+  }
+
+  /**
+   * Build a smooth clip-path polygon string from custom shape polar coordinates.
+   * Interpolates between defined points with cosine smoothing for organic shapes.
+   * Returns a CSS polygon() value string.
+   */
+  _buildCustomShapePolygon(customShape) {
+    const sorted = [...customShape].sort((a, b) => a[0] - b[0]);
+
+    // Generate interpolated points every 5° for a smooth curve (72 points)
+    const numPoints = 72;
+    const points = [];
+
+    for (let i = 0; i < numPoints; i++) {
+      const angleDeg = (i / numPoints) * 360;
+      const radius = this._interpolateCustomRadius(sorted, angleDeg);
+
+      // Convert polar to cartesian percentage coordinates.
+      // Convention: 0° = down (+y), 90° = right (+x), clockwise.
+      const angleRad = (angleDeg * Math.PI) / 180;
+      const x = 50 + radius * 50 * Math.sin(angleRad);
+      const y = 50 + radius * 50 * Math.cos(angleRad);
+      points.push(`${x.toFixed(2)}% ${y.toFixed(2)}%`);
+    }
+
+    return points.join(', ');
+  }
+
+  /**
+   * Cosine-interpolate the radius at a given angle between surrounding
+   * defined points in a sorted polar shape array.
+   */
+  _interpolateCustomRadius(sortedPoints, angleDeg) {
+    const n = sortedPoints.length;
+    const angle = ((angleDeg % 360) + 360) % 360;
+
+    // Find the two points surrounding the target angle
+    let beforeIdx = n - 1;
+    let afterIdx = 0;
+
+    for (let i = 0; i < n; i++) {
+      if (sortedPoints[i][0] > angle) {
+        afterIdx = i;
+        beforeIdx = (i - 1 + n) % n;
+        break;
+      }
+      if (i === n - 1) {
+        beforeIdx = n - 1;
+        afterIdx = 0;
+      }
+    }
+
+    const before = sortedPoints[beforeIdx];
+    const after = sortedPoints[afterIdx];
+
+    // Exact match
+    if (Math.abs(before[0] - angle) < 0.01) return before[1];
+    if (Math.abs(after[0] - angle) < 0.01) return after[1];
+
+    // Interpolation parameter t (handles 360° wrap-around)
+    let range = after[0] - before[0];
+    if (range <= 0) range += 360;
+    let diff = angle - before[0];
+    if (diff < 0) diff += 360;
+    const t = range > 0 ? diff / range : 0;
+
+    // Cosine interpolation for smooth organic curves
+    const t2 = (1 - Math.cos(t * Math.PI)) / 2;
+    return before[1] * (1 - t2) + after[1] * t2;
+  }
+
+  /**
+   * Get a cached canvas-generated mask data URL for a custom shape with soft edges.
+   * The mask is a greyscale image where white = fully opaque, black = fully transparent.
+   * The shape boundary follows the polar coordinates, and the edge_softness controls
+   * how gradual the transition is from opaque interior to transparent exterior.
+   */
+  _getCustomShapeMaskUrl(customShape, edgeSoftness, glowSize) {
+    if (!this._customMaskCache) this._customMaskCache = new Map();
+
+    // Adaptive mask resolution: use smaller canvas for smaller glows
+    const maskRes = glowSize <= 80 ? 128 : glowSize <= 160 ? 192 : 256;
+
+    // Build cache key efficiently — avoid JSON.stringify on every call
+    let key = `${maskRes}:${(edgeSoftness * 1000) | 0}:`;
+    for (let i = 0; i < customShape.length; i++) {
+      key += `${customShape[i][0]},${(customShape[i][1] * 1000) | 0};`;
+    }
+    if (this._customMaskCache.has(key)) {
+      return this._customMaskCache.get(key);
+    }
+
+    const url = this._generateCustomShapeMask(customShape, edgeSoftness, maskRes);
+
+    // Limit cache size to 32 entries
+    if (this._customMaskCache.size >= 32) {
+      const firstKey = this._customMaskCache.keys().next().value;
+      this._customMaskCache.delete(firstKey);
+    }
+    this._customMaskCache.set(key, url);
+    return url;
+  }
+
+  /**
+   * Render a custom shape mask to a canvas and return a data URL.
+   * For each pixel, computes the distance from center as a fraction of the
+   * shape boundary radius at that angle, then applies a smooth fade zone
+   * at the boundary controlled by edge_softness.
+   *
+   * @param {Array} customShape - sorted [angle°, radius 0-1] pairs
+   * @param {number} edgeSoftness - 0-1: how wide the edge fade zone is
+   * @returns {string} data URL for use as CSS mask-image
+   */
+  _generateCustomShapeMask(customShape, edgeSoftness, maskRes) {
+    const size = maskRes || 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+
+    const sorted = [...customShape].sort((a, b) => a[0] - b[0]);
+    const cx = size / 2;
+    const maxR = size / 2;
+
+    // Pre-compute shape radii every 1° for faster per-pixel lookup
+    const radiusLut = new Float32Array(360);
+    for (let a = 0; a < 360; a++) {
+      radiusLut[a] = this._interpolateCustomRadius(sorted, a) * maxR;
+    }
+
+    // Fade zone: edge_softness controls what fraction of the local radius is transition
+    // 0.1 = very tight edge, 1.0 = fade starts from center
+    const fadeRatio = Math.max(0.02, edgeSoftness * 0.6);
+
+    const imgData = ctx.createImageData(size, size);
+    const data = imgData.data;
+
+    for (let py = 0; py < size; py++) {
+      for (let px = 0; px < size; px++) {
+        const dx = px - cx;
+        const dy = py - cx;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        // Angle: 0° = down (+y), 90° = right (+x), clockwise
+        // atan2(dx, dy) gives angle from +y axis (down), clockwise
+        let angleDeg = Math.atan2(dx, dy) * 180 / Math.PI;
+        if (angleDeg < 0) angleDeg += 360;
+
+        // Look up shape boundary radius (linear interpolation between 1° steps)
+        const aFloor = Math.floor(angleDeg) % 360;
+        const aCeil = (aFloor + 1) % 360;
+        const aFrac = angleDeg - Math.floor(angleDeg);
+        const shapeR = radiusLut[aFloor] * (1 - aFrac) + radiusLut[aCeil] * aFrac;
+
+        // Fade zone width proportional to shape radius at this angle
+        const fadeWidth = shapeR * fadeRatio;
+
+        let alpha;
+        if (fadeWidth < 0.5) {
+          // Essentially no softness — hard edge
+          alpha = dist <= shapeR ? 255 : 0;
+        } else {
+          // Solid interior, smooth fade at boundary, transparent exterior
+          const innerR = shapeR - fadeWidth;
+          const outerR = shapeR + fadeWidth * 0.3; // slight overshoot for very soft look
+
+          if (dist <= innerR) {
+            alpha = 255;
+          } else if (dist >= outerR) {
+            alpha = 0;
+          } else {
+            // Smoothstep (hermite) for organic falloff
+            const t = (dist - innerR) / (outerR - innerR);
+            const s = t * t * (3 - 2 * t);
+            alpha = Math.round(255 * (1 - s));
+          }
+        }
+
+        const idx = (py * size + px) * 4;
+        data[idx] = 255;
+        data[idx + 1] = 255;
+        data[idx + 2] = 255;
+        data[idx + 3] = alpha; // alpha channel controls mask visibility
+      }
+    }
+
+    ctx.putImageData(imgData, 0, 0);
+    return canvas.toDataURL('image/png');
+  }
+
+  /**
+   * Test whether a ray from (ox,oy) toward (px,py) is blocked by segment (ax,ay)-(bx,by)
+   * before reaching the target pixel. Uses parametric ray-segment intersection.
+   * Returns true if the segment blocks the line of sight.
+   */
+  _isRayBlockedBySegment(ox, oy, px, py, ax, ay, bx, by) {
+    const dx = px - ox;
+    const dy = py - oy;
+    const ex = bx - ax;
+    const ey = by - ay;
+
+    const denom = dx * ey - dy * ex;
+    if (Math.abs(denom) < 1e-10) return false; // parallel
+
+    const t = ((ax - ox) * ey - (ay - oy) * ex) / denom; // ray parameter
+    const u = ((ax - ox) * dy - (ay - oy) * dx) / denom; // segment parameter
+
+    // t in (0,1): hit is between light and pixel
+    // u in [0,1]: hit is on the wall segment
+    return t > 0.005 && t < 0.995 && u >= 0 && u <= 1;
+  }
+
+  /**
+   * Get a cached wall shadow mask for a specific light + wall configuration.
+   * The mask is white where the light is visible, transparent where walls cast shadows.
+   *
+   * @param {Array} wallSegments - wall segments in mask pixel coordinates [{ax,ay,bx,by}]
+   * @param {number} lightX - light x position in mask pixels
+   * @param {number} lightY - light y position in mask pixels
+   * @param {number} maskSize - mask resolution (pixels)
+   * @param {string} cacheExtra - additional cache key component (e.g., glow element size)
+   * @returns {string} data URL for CSS mask-image
+   */
+  _getWallShadowMaskUrl(wallSegments, lightX, lightY, maskSize, cacheExtra) {
+    if (!this._wallMaskCache) this._wallMaskCache = new Map();
+
+    // Build cache key with integer-rounded coordinates to improve hit rate
+    // while maintaining sufficient precision for visual quality
+    let key = `${lightX | 0},${lightY | 0}:${maskSize}:`;
+    for (let i = 0; i < wallSegments.length; i++) {
+      const s = wallSegments[i];
+      key += `${s.ax | 0},${s.ay | 0},${s.bx | 0},${s.by | 0}|`;
+    }
+    if (cacheExtra) key += cacheExtra;
+
+    if (this._wallMaskCache.has(key)) {
+      return this._wallMaskCache.get(key);
+    }
+
+    const url = this._generateWallShadowMask(wallSegments, lightX, lightY, maskSize);
+
+    if (this._wallMaskCache.size >= 64) {
+      const firstKey = this._wallMaskCache.keys().next().value;
+      this._wallMaskCache.delete(firstKey);
+    }
+    this._wallMaskCache.set(key, url);
+    return url;
+  }
+
+  /**
+   * Generate a wall shadow mask using polygon-based shadow casting.
+   * For each wall segment, computes a shadow trapezoid extending away from
+   * the light and fills it using Canvas 2D's GPU-accelerated, anti-aliased
+   * path rendering. The glow element's own blur filter provides natural
+   * penumbra, so no additional blur pass is needed on the mask.
+   */
+  _generateWallShadowMask(wallSegments, lightX, lightY, maskSize) {
+    const canvas = document.createElement('canvas');
+    canvas.width = maskSize;
+    canvas.height = maskSize;
+    const ctx = canvas.getContext('2d');
+
+    // Start fully lit (white opaque)
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, maskSize, maskSize);
+
+    // Draw shadow polygons: erase where walls block line-of-sight
+    // destination-out compositing removes destination pixels under the filled shape
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = 'white';
+
+    // Extend shadow rays well beyond the mask boundary
+    const extend = maskSize * 3;
+
+    for (let i = 0; i < wallSegments.length; i++) {
+      const s = wallSegments[i];
+      const ax = s.ax, ay = s.ay, bx = s.bx, by = s.by;
+
+      // Direction vectors from light to each wall endpoint
+      const dax = ax - lightX, day = ay - lightY;
+      const dbx = bx - lightX, dby = by - lightY;
+      const daLen = Math.sqrt(dax * dax + day * day);
+      const dbLen = Math.sqrt(dbx * dbx + dby * dby);
+
+      // Skip degenerate walls where an endpoint is on the light
+      if (daLen < 0.5 || dbLen < 0.5) continue;
+
+      // Extend endpoints away from light to form the far edge of the shadow
+      const ax2 = ax + (dax / daLen) * extend;
+      const ay2 = ay + (day / daLen) * extend;
+      const bx2 = bx + (dbx / dbLen) * extend;
+      const by2 = by + (dby / dbLen) * extend;
+
+      // Shadow trapezoid: wall edge → extended shadow boundary
+      // Canvas 2D automatically anti-aliases these edges
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(ax2, ay2);
+      ctx.lineTo(bx2, by2);
+      ctx.lineTo(bx, by);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    return canvas.toDataURL('image/png');
+  }
+
+  /**
+   * Convert wall segments from canvas percentage coordinates to mask pixel coordinates,
+   * relative to a glow element's local coordinate space.
+   *
+   * @param {Array} walls - [{x1,y1,x2,y2}] in canvas %
+   * @param {number} lightXPct - light x position in canvas %
+   * @param {number} lightYPct - light y position in canvas %
+   * @param {number} glowWPx - glow element width in px
+   * @param {number} glowHPx - glow element height in px
+   * @param {number} canvasWPx - canvas width in px
+   * @param {number} canvasHPx - canvas height in px
+   * @param {number} maskSize - mask resolution
+   * @param {number} lightMaskX - light x in mask pixels
+   * @param {number} lightMaskY - light y in mask pixels
+   * @returns {Array} [{ax,ay,bx,by}] in mask pixel coordinates
+   */
+  _convertWallsToMaskCoords(walls, lightXPct, lightYPct, glowWPx, glowHPx, canvasWPx, canvasHPx, maskSize, lightMaskX, lightMaskY, glowRotationDeg) {
+    const result = [];
+    // When the glow element has CSS rotation, the mask rotates with it.
+    // Counter-rotate wall coordinates by -direction so shadows stay fixed in canvas space.
+    const needsRotation = glowRotationDeg && glowRotationDeg !== 0;
+    const rad = needsRotation ? -glowRotationDeg * Math.PI / 180 : 0;
+    const cosR = needsRotation ? Math.cos(rad) : 1;
+    const sinR = needsRotation ? Math.sin(rad) : 0;
+    for (const w of walls) {
+      // Wall endpoint in canvas pixels, relative to light
+      let relX1 = (w.x1 - lightXPct) / 100 * canvasWPx;
+      let relY1 = (w.y1 - lightYPct) / 100 * canvasHPx;
+      let relX2 = (w.x2 - lightXPct) / 100 * canvasWPx;
+      let relY2 = (w.y2 - lightYPct) / 100 * canvasHPx;
+
+      // Counter-rotate wall positions into the glow element's local (pre-rotation) space
+      if (needsRotation) {
+        const rx1 = relX1 * cosR - relY1 * sinR;
+        const ry1 = relX1 * sinR + relY1 * cosR;
+        const rx2 = relX2 * cosR - relY2 * sinR;
+        const ry2 = relX2 * sinR + relY2 * cosR;
+        relX1 = rx1; relY1 = ry1;
+        relX2 = rx2; relY2 = ry2;
+      }
+
+      // Convert to mask pixel coordinates
+      const ax = lightMaskX + relX1 / glowWPx * maskSize;
+      const ay = lightMaskY + relY1 / glowHPx * maskSize;
+      const bx = lightMaskX + relX2 / glowWPx * maskSize;
+      const by = lightMaskY + relY2 / glowHPx * maskSize;
+
+      result.push({ ax, ay, bx, by });
+    }
+    return result;
+  }
+
+  /** Normalize per-entity glow overrides. Each value is a partial glow config. */
+  _normalizeGlowOverrides(obj) {
+    const result = {};
+    if (!obj || typeof obj !== 'object') return result;
+    Object.entries(obj).forEach(([entity, val]) => {
+      if (!val || typeof val !== 'object') return;
+      const o = {};
+      if (val.enabled != null) o.enabled = val.enabled === true;
+      if (val.direction != null && Number.isFinite(Number(val.direction))) o.direction = Number(val.direction);
+      if (val.length != null && Number.isFinite(Number(val.length)) && Number(val.length) > 0) o.length = Number(val.length);
+      if (val.width != null && Number.isFinite(Number(val.width)) && Number(val.width) > 0) o.width = Number(val.width);
+      if (val.intensity != null && Number.isFinite(Number(val.intensity))) o.intensity = Math.max(0, Math.min(1, Number(val.intensity)));
+      if (val.blur != null && Number.isFinite(Number(val.blur)) && Number(val.blur) >= 0) o.blur = Number(val.blur);
+      if (val.offset_x != null && Number.isFinite(Number(val.offset_x))) o.offset_x = Number(val.offset_x);
+      if (val.offset_y != null && Number.isFinite(Number(val.offset_y))) o.offset_y = Number(val.offset_y);
+      if (val.spread != null && Number.isFinite(Number(val.spread)) && Number(val.spread) > 0) o.spread = Number(val.spread);
+      if (val.start_width != null && Number.isFinite(Number(val.start_width))) o.start_width = Math.max(0, Math.min(1, Number(val.start_width)));
+      if (val.scale_with_brightness != null) o.scale_with_brightness = val.scale_with_brightness !== false;
+      if (typeof val.color === 'string' && val.color.trim()) o.color = val.color.trim();
+      if (SpatialLightColorCard.GLOW_SHAPES.includes(val.shape)) o.shape = val.shape;
+      if (val.edge_softness != null && Number.isFinite(Number(val.edge_softness))) o.edge_softness = Math.max(0, Math.min(1, Number(val.edge_softness)));
+      if (SpatialLightColorCard.GLOW_FALLOFFS.includes(val.falloff)) o.falloff = val.falloff;
+      const gs = this._normalizeGradientStops(val.gradient_stops);
+      if (gs) o.gradient_stops = gs;
+      const cs = this._normalizeCustomShape(val.custom_shape);
+      if (cs) o.custom_shape = cs;
+      if (Object.keys(o).length > 0) result[entity] = o;
+    });
+    return result;
+  }
+
+  /** Normalize per-entity inline style overrides. Each value is a CSS properties string. */
+  _normalizeStyleOverrides(obj) {
+    const result = {};
+    if (!obj || typeof obj !== 'object') return result;
+    Object.entries(obj).forEach(([entity, val]) => {
+      if (typeof val === 'string' && val.trim()) {
+        result[entity] = val.trim();
+      }
+    });
+    return result;
+  }
+
+  /**
+   * Normalize glow_walls config. Supports line segments and boxes.
+   * Line segment: [x1%, y1%, x2%, y2%] or {x1, y1, x2, y2}
+   * Box: {x, y, width, height} — expanded to 4 line segments.
+   * All coordinates in canvas percentage (0-100).
+   * Returns array of {x1, y1, x2, y2} line segments.
+   */
+  _normalizeGlowWalls(walls) {
+    if (!Array.isArray(walls)) return [];
+    const segments = [];
+    for (const wall of walls) {
+      if (!wall) continue;
+
+      // Array shorthand: [x1, y1, x2, y2]
+      if (Array.isArray(wall)) {
+        if (wall.length >= 4) {
+          const [x1, y1, x2, y2] = wall.map(Number);
+          if ([x1, y1, x2, y2].every(Number.isFinite)) {
+            segments.push({ x1, y1, x2, y2 });
+          }
+        }
+        continue;
+      }
+
+      if (typeof wall !== 'object') continue;
+
+      // Box: {x, y, width, height} → 4 segments
+      if (wall.x != null && wall.y != null && wall.width != null && wall.height != null) {
+        const x = Number(wall.x), y = Number(wall.y);
+        const w = Number(wall.width), h = Number(wall.height);
+        if ([x, y, w, h].every(Number.isFinite)) {
+          segments.push({ x1: x, y1: y, x2: x + w, y2: y });         // top
+          segments.push({ x1: x + w, y1: y, x2: x + w, y2: y + h }); // right
+          segments.push({ x1: x + w, y1: y + h, x2: x, y2: y + h }); // bottom
+          segments.push({ x1: x, y1: y + h, x2: x, y2: y });         // left
+        }
+        continue;
+      }
+
+      // Line segment: {x1, y1, x2, y2}
+      if (wall.x1 != null && wall.y1 != null && wall.x2 != null && wall.y2 != null) {
+        const x1 = Number(wall.x1), y1 = Number(wall.y1);
+        const x2 = Number(wall.x2), y2 = Number(wall.y2);
+        if ([x1, y1, x2, y2].every(Number.isFinite)) {
+          segments.push({ x1, y1, x2, y2 });
+        }
+      }
+    }
+    return segments;
+  }
+
+  /** Return the effective glow config for a specific entity (global merged with per-entity overrides). */
+  _getGlowConfig(entity_id) {
+    const base = this._config.glow;
+    const override = this._config.glow_overrides[entity_id];
+    if (!override) return base;
+    return { ...base, ...override };
+  }
+
+  /** Parse a CSS color string to {r, g, b}. Returns null if unparseable. */
+  _parseColorToRGB(color) {
+    if (!color || color === 'transparent') return null;
+
+    // Handle rgb(r, g, b)
+    const rgbMatch = color.match(/^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/i);
+    if (rgbMatch) return { r: parseInt(rgbMatch[1]), g: parseInt(rgbMatch[2]), b: parseInt(rgbMatch[3]) };
+
+    // Handle #hex
+    let hex = color;
+    if (hex.startsWith('#')) {
+      hex = hex.slice(1);
+      if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+      if (hex.length === 6) {
+        return {
+          r: parseInt(hex.slice(0, 2), 16),
+          g: parseInt(hex.slice(2, 4), 16),
+          b: parseInt(hex.slice(4, 6), 16),
+        };
+      }
+    }
+
+    return null;
+  }
+
+  _normalizeCanvasElements(elements) {
+    if (!Array.isArray(elements)) return [];
+    return elements.map((el, idx) => {
+      if (!el || typeof el !== 'object') return null;
+      const type = el.type;
+      if (!['link', 'sensor', 'template'].includes(type)) return null;
+
+      // Position (required)
+      const pos = el.position && typeof el.position === 'object'
+        ? { x: Number.isFinite(parseFloat(el.position.x)) ? parseFloat(el.position.x) : 50, y: Number.isFinite(parseFloat(el.position.y)) ? parseFloat(el.position.y) : 50 }
+        : { x: 50, y: 50 };
+
+      // Auto-generate ID
+      const id = el.id || `canvas_el_${idx}`;
+
+      // Normalize action configs
+      const normalizeAction = (action) => {
+        if (!action || typeof action !== 'object') return null;
+        const a = { action: action.action || 'none' };
+        if (action.navigation_path) a.navigation_path = String(action.navigation_path);
+        if (action.url_path) a.url_path = String(action.url_path);
+        if (action.entity) a.entity = String(action.entity);
+        if (action.service) a.service = String(action.service);
+        if (action.service_data && typeof action.service_data === 'object') a.service_data = action.service_data;
+        if (action.data && typeof action.data === 'object') a.data = action.data;
+        return a;
+      };
+
+      // Normalize style
+      const style = {};
+      if (el.style && typeof el.style === 'object') {
+        if (el.style.color) style.color = String(el.style.color);
+        if (el.style.font_size != null) style.font_size = parseFloat(el.style.font_size) || 14;
+        if (el.style.font_weight != null) style.font_weight = String(el.style.font_weight);
+        if (el.style.opacity != null) {
+          const op = parseFloat(el.style.opacity);
+          if (Number.isFinite(op)) style.opacity = Math.max(0, Math.min(1, op));
+        }
+        if (el.style.text_shadow != null) style.text_shadow = String(el.style.text_shadow);
+        if (el.style.background != null) style.background = String(el.style.background);
+        if (el.style.border_radius != null) style.border_radius = String(el.style.border_radius);
+        if (el.style.letter_spacing != null) style.letter_spacing = String(el.style.letter_spacing);
+      }
+
+      const base = {
+        type,
+        id,
+        position: pos,
+        label: el.label != null ? String(el.label) : null,
+        show_background: el.show_background !== false,
+        tap_action: normalizeAction(el.tap_action),
+        hold_action: normalizeAction(el.hold_action),
+        double_tap_action: normalizeAction(el.double_tap_action),
+        style,
+      };
+
+      if (type === 'link') {
+        base.icon = el.icon || 'mdi:link';
+        base.size = parseInt(el.size, 10) || 40;
+      } else if (type === 'sensor') {
+        base.entity = el.entity || null;
+        base.prefix = el.prefix != null ? String(el.prefix) : '';
+        base.suffix = el.suffix !== undefined ? String(el.suffix) : null; // null = use unit_of_measurement
+        base.show_icon = el.show_icon !== false;
+        base.icon = el.icon || null; // null = use entity icon
+        // Default tap to more-info for the sensor entity
+        if (!base.tap_action && base.entity) {
+          base.tap_action = { action: 'more-info', entity: base.entity };
+        }
+      } else if (type === 'template') {
+        base.content = el.content || '';
+        base.icon = el.icon || null;
+      }
+
+      return base;
+    }).filter(Boolean);
+  }
+
+  _normalizeBackgroundImage(value) {
+    if (!value) return null;
+    if (typeof value === 'string') {
+      const url = value.trim();
+      return url ? { url } : null;
+    }
+    if (typeof value === 'object') {
+      const url = typeof value.url === 'string' ? value.url.trim() : '';
+      const size = typeof value.size === 'string' ? value.size.trim() : '';
+      const position = typeof value.position === 'string' ? value.position.trim() : '';
+      const repeat = typeof value.repeat === 'string' ? value.repeat.trim() : '';
+      const blend = typeof value.blend_mode === 'string' ? value.blend_mode.trim() : '';
+      const opacity = typeof value.opacity === 'number' ? value.opacity : (typeof value.opacity === 'string' ? parseFloat(value.opacity) : NaN);
+      if (!url && !size && !position && !repeat && !blend && isNaN(opacity)) return null;
+      const normalized = {};
+      if (url) normalized.url = url;
+      if (size) normalized.size = size;
+      if (position) normalized.position = position;
+      if (repeat) normalized.repeat = repeat;
+      if (blend) normalized.blend_mode = blend;
+      if (!isNaN(opacity)) normalized.opacity = Math.max(0, Math.min(1, opacity));
+      return normalized;
+    }
+    return null;
+  }
+
+  _canvasBackgroundStyle() {
+    const bg = this._config.background_image;
+    if (!bg) return '';
+    const vars = [];
+    if (bg.url) {
+      const escaped = String(bg.url).replace(/"/g, '%22').replace(/'/g, "\\'");
+      vars.push(`--canvas-background-image:url('${escaped}')`);
+    }
+    if (bg.size) vars.push(`--canvas-background-size:${bg.size}`);
+    if (bg.position) vars.push(`--canvas-background-position:${bg.position}`);
+    if (bg.repeat) vars.push(`--canvas-background-repeat:${bg.repeat}`);
+    if (bg.blend_mode) vars.push(`--canvas-background-blend-mode:${bg.blend_mode}`);
+    if (bg.opacity !== undefined && bg.opacity !== null) vars.push(`--canvas-background-opacity:${bg.opacity}`);
+    return vars.join('; ');
+  }
+
+  set hass(hass) {
+    const prev = this._hass;
+    this._hass = hass;
+    if (!prev) {
+      this._renderAll();
+      this._initZigbeeGroupTracking();
+      return;
+    }
+    // H3: HA fires `set hass` whenever ANY entity in the system changes. Skip
+    // the full updateLights pipeline if no entity this card cares about
+    // actually changed state. State objects are immutable per HA conventions
+    // so `===` is sufficient to detect changes.
+    if (this._isRelevantHassChange(prev, hass)) {
+      this.updateLights();
+    } else {
+      // Even when no controlled entity changed, keep ha-icon refreshing —
+      // icons load lazily from the MDI iconset on initial page open, and
+      // pre-diff the constant traffic of state events kept retrying
+      // `_refreshEntityIcons` until they all rendered. The retry timer also
+      // does this but with 250ms / 500ms / 750ms backoff that's noticeable
+      // on slow loads. This call is idempotent and cheap (no DOM thrash if
+      // every icon is already correct).
+      this._refreshEntityIcons();
+    }
+  }
+
+  _isRelevantHassChange(prev, next) {
+    if (!prev || !next || !prev.states || !next.states) return true;
+    const ents = this._config.entities || [];
+    for (let i = 0; i < ents.length; i++) {
+      if (prev.states[ents[i]] !== next.states[ents[i]]) return true;
+    }
+    const ces = this._config.canvas_elements || [];
+    for (let i = 0; i < ces.length; i++) {
+      const ce = ces[i];
+      if (ce && ce.entity && prev.states[ce.entity] !== next.states[ce.entity]) return true;
+      // Sensors fall back to icon, prefix, suffix from the entity attributes;
+      // the `entity` check above covers them.
+    }
+    return false;
+  }
+
+  /** ---------- Label system ---------- */
+  _generateLabel(entity_id) {
+    if (this._config.label_overrides[entity_id]) {
+      return this._config.label_overrides[entity_id];
+    }
+    const st = this._hass?.states[entity_id];
+    if (!st) return '?';
+
+    const name = st.attributes.friendly_name || entity_id;
+    const allNames = this._config.entities.map(e => this._hass?.states[e]?.attributes.friendly_name || e);
+
+    // 1) trailing numbers
+    const m = name.match(/(\d+)$/);
+    if (m) {
+      const base = name.substring(0, name.length - m[0].length).trim();
+      const n = m[0];
+      const similar = allNames.filter(nm => nm.startsWith(base)).length;
+      if (similar > 1) {
+        return this._getInitials(base) + n;
+      }
+    }
+    // 2) directional
+    const words = name.split(/\s+/);
+    const dirs = ['left', 'right', 'center', 'front', 'back', 'top', 'bottom', 'north', 'south', 'east', 'west'];
+    const dirWord = words.find(w => dirs.includes(w.toLowerCase()));
+    if (dirWord) {
+      const baseWords = words.filter(w => w !== dirWord);
+      const initials = baseWords.slice(0, 2).map(w => w[0]).join('');
+      return (initials + dirWord[0]).toUpperCase();
+    }
+    return this._getInitials(name);
+  }
+
+  _getInitials(text) {
+    const stop = ['the', 'a', 'an', 'light', 'lamp', 'bulb'];
+    const ws = text.split(/\s+/).filter(w => w && !stop.includes(w.toLowerCase()));
+    if (ws.length === 0) return text.substring(0, 2).toUpperCase();
+    if (ws.length === 1) return ws[0].substring(0, 2).toUpperCase();
+    return ws.slice(0, 3).map(w => w[0]).join('').toUpperCase();
+  }
+
+  /**
+   * Reposition visible labels (selected/hovered lights) to avoid overlapping
+   * nearby light circles and other visible labels, and to stay within canvas bounds.
+   */
+  _repositionLabels() {
+    const canvas = this._els?.canvas;
+    if (!canvas) return;
+    const canvasRect = canvas.getBoundingClientRect();
+    if (canvasRect.width === 0 || canvasRect.height === 0) return;
+
+    // Gather all light elements and their pixel centers
+    const lightEls = canvas.querySelectorAll('.light');
+    const lightInfos = [];
+    lightEls.forEach(el => {
+      const entityId = el.dataset.entity;
+      const pos = this._config.positions[entityId] || { x: 50, y: 50 };
+      const sizeOverride = this._config.size_overrides[entityId] || this._config.light_size;
+      const size = (window.innerWidth <= 768) ? Math.min(sizeOverride, 50) : sizeOverride;
+      const cx = pos.x / 100 * canvasRect.width;
+      const cy = pos.y / 100 * canvasRect.height;
+      const r = size / 2;
+      const labelEl = el.querySelector('.light-label');
+      const isVisible = el.classList.contains('selected') || el.matches(':hover');
+      lightInfos.push({ entityId, el, labelEl, cx, cy, r, size, isVisible });
+    });
+
+    // Estimate label dimensions by measuring (or use a reasonable default)
+    const LABEL_H = 21; // ~11px font + 8px padding + 2px border
+    const GAP = 8;
+
+    // For each visible label, pick the best position
+    // First pass: collect all visible labels that need positioning
+    const visibleLabels = lightInfos.filter(l => l.isVisible && l.labelEl);
+
+    // Only reset data-pos and offset for labels we're about to reposition.
+    // Non-visible labels keep their current position so they don't jump during fade-out.
+    visibleLabels.forEach(l => {
+      l.labelEl.removeAttribute('data-pos');
+      l.labelEl.style.removeProperty('--label-offset');
+    });
+
+    if (visibleLabels.length === 0) return;
+
+    // Measure actual label widths from the DOM (offsetWidth includes padding + border)
+    visibleLabels.forEach(l => {
+      l.labelW = l.labelEl.offsetWidth || 40;
+    });
+
+    // Build the list of all light circle obstacles (all entities, not just visible)
+    const circles = lightInfos.map(l => ({ cx: l.cx, cy: l.cy, r: l.r, entityId: l.entityId }));
+
+    // For each direction, compute the label rect relative to the light center
+    const getLabelRect = (light, dir) => {
+      const w = light.labelW;
+      const h = LABEL_H;
+      switch (dir) {
+        case 'below':
+          return { x: light.cx - w / 2, y: light.cy + light.r + GAP, w, h };
+        case 'above':
+          return { x: light.cx - w / 2, y: light.cy - light.r - GAP - h, w, h };
+        case 'right':
+          return { x: light.cx + light.r + GAP, y: light.cy - h / 2, w, h };
+        case 'left':
+          return { x: light.cx - light.r - GAP - w, y: light.cy - h / 2, w, h };
+      }
+    };
+
+    // Check if a rect overlaps with a circle
+    const rectCircleOverlap = (rect, circle) => {
+      // Find closest point on rect to circle center
+      const closestX = Math.max(rect.x, Math.min(circle.cx, rect.x + rect.w));
+      const closestY = Math.max(rect.y, Math.min(circle.cy, rect.y + rect.h));
+      const dx = circle.cx - closestX;
+      const dy = circle.cy - closestY;
+      return (dx * dx + dy * dy) < (circle.r * circle.r);
+    };
+
+    // Check if two rects overlap
+    const rectsOverlap = (a, b) => {
+      return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    };
+
+    const directions = ['below', 'above', 'right', 'left'];
+    const placedRects = []; // Track already-placed label rects to avoid label-label overlap
+
+    // Score each direction for a given light, considering placed labels
+    const scoreDirection = (light, dir) => {
+      const rect = getLabelRect(light, dir);
+      let score = 0;
+
+      const labelCx = rect.x + rect.w / 2;
+      const labelCy = rect.y + rect.h / 2;
+      const distToOwn = Math.hypot(labelCx - light.cx, labelCy - light.cy);
+
+      for (const c of circles) {
+        if (c.entityId === light.entityId) continue;
+
+        // Hard constraint: label must not appear to belong to another entity.
+        // If label center is closer to a neighbor than to its own light, huge penalty.
+        const distToOther = Math.hypot(labelCx - c.cx, labelCy - c.cy);
+        if (distToOther < distToOwn) score += 1000;
+
+        // Moderate penalty for overlapping another light circle
+        if (rectCircleOverlap(rect, c)) score += 50;
+      }
+
+      // Penalty for overlapping already-placed labels
+      for (const pr of placedRects) {
+        if (rectsOverlap(rect, pr)) score += 50;
+      }
+
+      // Penalty for going outside canvas — an invisible label is worse than any ambiguity
+      const clippedX = Math.max(0, -rect.x) + Math.max(0, rect.x + rect.w - canvasRect.width);
+      const clippedY = Math.max(0, -rect.y) + Math.max(0, rect.y + rect.h - canvasRect.height);
+      if (clippedX > rect.w * 0.3 || clippedY > rect.h * 0.3) {
+        // Label is mostly hidden by canvas overflow:hidden — worst possible outcome
+        score += 2000;
+      } else if (clippedX > 0 || clippedY > 0) {
+        score += (clippedX + clippedY) * 5;
+      }
+
+      // Prefer below > above > right/left.
+      // Below/above keep horizontal centering on the light, maintaining clear association.
+      // Left/right push the label far from center and easily cause ambiguity.
+      if (dir === 'below') score -= 1;
+      else if (dir === 'above') score -= 0.5;
+
+      return score;
+    };
+
+    // Greedy assignment: process labels, picking best direction for each
+    for (const light of visibleLabels) {
+      let bestDir = 'below';
+      let bestScore = Infinity;
+
+      for (const dir of directions) {
+        const s = scoreDirection(light, dir);
+        if (s < bestScore) {
+          bestScore = s;
+          bestDir = dir;
+        }
+      }
+
+      // Apply the chosen position
+      if (bestDir !== 'below') {
+        light.labelEl.setAttribute('data-pos', bestDir);
+      }
+
+      // Clamp label within canvas bounds via --label-offset.
+      // For below/above the offset shifts horizontally; for left/right vertically.
+      const finalRect = getLabelRect(light, bestDir);
+      let offset = 0;
+      if (bestDir === 'below' || bestDir === 'above') {
+        if (finalRect.x < 0) offset = -finalRect.x;
+        else if (finalRect.x + finalRect.w > canvasRect.width) offset = canvasRect.width - finalRect.x - finalRect.w;
+      } else {
+        if (finalRect.y < 0) offset = -finalRect.y;
+        else if (finalRect.y + finalRect.h > canvasRect.height) offset = canvasRect.height - finalRect.y - finalRect.h;
+      }
+      if (offset !== 0) {
+        light.labelEl.style.setProperty('--label-offset', `${Math.round(offset)}px`);
+      } else {
+        light.labelEl.style.removeProperty('--label-offset');
+      }
+
+      // Record the placed rect (adjusted for clamping)
+      if (offset !== 0) {
+        if (bestDir === 'below' || bestDir === 'above') {
+          finalRect.x += offset;
+        } else {
+          finalRect.y += offset;
+        }
+      }
+      placedRects.push(finalRect);
+    }
+  }
+
+  /** ---------- Icon system (SVG via HA components) ---------- */
+  _getEntityIconData(entity_id) {
+    const st = this._hass?.states[entity_id];
+    if (!st) {
+      if (entity_id.startsWith('scene.')) return { type: 'mdi', value: 'mdi:palette' };
+      return { type: 'mdi', value: 'mdi:lightbulb' };
+    }
+    const icon = st.attributes.icon || (entity_id.startsWith('scene.') ? 'mdi:palette' : 'mdi:lightbulb');
+    if (this._config.icon_style === 'emoji') {
+      // Fallback only; discouraged in this upgrade
+      return { type: 'emoji', value: '💡' };
+    }
+    if (icon.startsWith('mdi:')) return { type: 'mdi', value: icon };
+    // HA sometimes sets arbitrary icon strings; attempt to feed into ha-icon anyway
+    return { type: 'mdi', value: icon };
+  }
+
+  _getIconTransform(entity_id) {
+    const rotation = this._config.icon_rotation_overrides[entity_id] !== undefined
+      ? this._config.icon_rotation_overrides[entity_id]
+      : this._config.icon_rotation;
+    const mirror = this._config.icon_mirror_overrides[entity_id] !== undefined
+      ? this._config.icon_mirror_overrides[entity_id]
+      : this._config.icon_mirror;
+    const parts = [];
+    if (rotation) parts.push(`rotate(${rotation}deg)`);
+    if (mirror === 'horizontal') parts.push('scaleX(-1)');
+    else if (mirror === 'vertical') parts.push('scaleY(-1)');
+    else if (mirror === 'both') parts.push('scale(-1,-1)');
+    return parts.length ? parts.join(' ') : '';
+  }
+
+  _renderIcon(iconData) {
+    if (iconData.type === 'mdi') {
+      return `<ha-icon class="light-icon light-icon-mdi" data-icon="${this._escapeHtml(iconData.value)}" icon="${this._escapeHtml(iconData.value)}"></ha-icon>`;
+    }
+    if (iconData.type === 'emoji') {
+      return `<div class="light-icon light-icon-emoji">${iconData.value}</div>`;
+    }
+    return `<ha-icon class="light-icon light-icon-mdi" data-icon="mdi:lightbulb" icon="mdi:lightbulb"></ha-icon>`;
+  }
+
+  _scheduleIconRefresh(attempt, delay) {
+    if (this._iconRefreshHandle) {
+      clearTimeout(this._iconRefreshHandle);
+    }
+    this._iconRefreshHandle = setTimeout(() => {
+      this._iconRefreshHandle = null;
+      this._refreshEntityIcons(attempt);
+    }, delay);
+  }
+
+  _refreshEntityIcons(attempt = 0) {
+    if (!this.shadowRoot) return;
+    const icons = this.shadowRoot.querySelectorAll('ha-icon[data-icon]');
+    if (!icons.length) return;
+
+    const applyIcons = () => {
+      icons.forEach(iconEl => {
+        const iconName = iconEl.getAttribute('data-icon');
+        if (!iconName) return;
+        if (iconEl.icon !== iconName) {
+          iconEl.icon = iconName;
+        }
+        if (iconEl.getAttribute('icon') !== iconName) {
+          iconEl.setAttribute('icon', iconName);
+        }
+        if (this._hass && iconEl.hass !== this._hass) {
+          iconEl.hass = this._hass;
+        }
+      });
+    };
+
+    const ensureDefined = () => {
+      applyIcons();
+      const unresolved = Array.from(icons).some(iconEl => {
+        if (!iconEl.shadowRoot) return true;
+        return !iconEl.shadowRoot.querySelector('ha-svg-icon, svg');
+      });
+      if (unresolved && attempt < 8) {
+        this._scheduleIconRefresh(attempt + 1, 250 * (attempt + 1));
+        if (!this._iconRehydrateHandle) {
+          this._iconRehydrateHandle = setTimeout(() => {
+            this._iconRehydrateHandle = null;
+            this._forceIconRerender();
+          }, 120);
+        }
+      } else if (!unresolved && this._iconRehydrateHandle) {
+        clearTimeout(this._iconRehydrateHandle);
+        this._iconRehydrateHandle = null;
+      }
+    };
+
+    if (typeof customElements === 'undefined') {
+      ensureDefined();
+      return;
+    }
+
+    if (customElements.get('ha-icon')) {
+      ensureDefined();
+    } else if (attempt < 8) {
+      customElements.whenDefined('ha-icon').then(() => this._refreshEntityIcons(attempt + 1));
+    }
+  }
+
+  _forceIconRerender() {
+    if (!this.shadowRoot) return;
+    const lights = this.shadowRoot.querySelectorAll('.light');
+    if (!lights.length) return;
+
+    lights.forEach(light => {
+      const existing = light.querySelector('ha-icon[data-icon]');
+      if (!existing) return;
+      const iconName = existing.getAttribute('data-icon');
+      if (!iconName) return;
+      const replacement = document.createElement('ha-icon');
+      replacement.className = existing.className;
+      replacement.setAttribute('data-icon', iconName);
+      replacement.setAttribute('icon', iconName);
+      if (this._hass) {
+        replacement.hass = this._hass;
+      }
+      light.replaceChild(replacement, existing);
+    });
+
+    const raf = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : (cb) => setTimeout(cb, 16);
+    raf(() => this._refreshEntityIcons(7));
+  }
+
+  _toggleEntity(entity) {
+    if (!this._hass) return;
+    const stateObj = this._hass.states?.[entity];
+    if (!stateObj) return;
+    const [domain] = entity.split('.');
+
+    if (domain === 'binary_sensor') return;
+    // Don't fire toggles against unavailable entities; HA logs a warning and
+    // nothing changes anyway.
+    if (!this._isEntityAvailable(entity)) return;
+
+    if (domain === 'scene') {
+      this._hass.callService('scene', 'turn_on', { entity_id: entity })
+        .catch(err => console.warn(`[spatial-light-card] scene.turn_on ${entity} failed:`, err));
+      return;
+    }
+
+    if (domain !== 'light' && domain !== 'switch' && domain !== 'input_boolean') return;
+    const service = stateObj.state === 'on' ? 'turn_off' : 'turn_on';
+    this._hass.callService(domain, service, { entity_id: entity })
+      .catch(err => console.warn(`[spatial-light-card] ${domain}.${service} ${entity} failed:`, err));
+  }
+
+  _isSelectableEntity(entity) {
+    const [domain] = entity.split('.');
+    return domain !== 'binary_sensor';
+  }
+
+  // Toggle a group of entities to a single target on/off state, batched per
+  // domain. If any entity in the group is currently off, the target is "on";
+  // if all are on, the target is "off". Scenes are always activated since
+  // they have no off-state. Unavailable entities are skipped.
+  _toggleSelection(entities) {
+    if (!this._hass || !Array.isArray(entities) || entities.length === 0) return;
+    const candidates = entities.filter(id => {
+      const [d] = id.split('.');
+      if (d === 'binary_sensor') return false;
+      return this._isEntityAvailable(id);
+    });
+    if (candidates.length === 0) return;
+
+    // Decide target state from the toggleable subset (lights, switches,
+    // input_booleans). Scenes don't contribute — they always fire turn_on.
+    const stateContributors = candidates.filter(id => {
+      const [d] = id.split('.');
+      return d === 'light' || d === 'switch' || d === 'input_boolean';
+    });
+    const anyOff = stateContributors.some(id => this._hass.states?.[id]?.state !== 'on');
+    const targetOn = stateContributors.length === 0 ? true : anyOff;
+    const service = targetOn ? 'turn_on' : 'turn_off';
+
+    // Batch by domain — `light.turn_on { entity_id: [...] }` lets the platform
+    // sync bulbs, and we still want one call per domain at most.
+    const byDomain = {};
+    for (const id of candidates) {
+      const [d] = id.split('.');
+      const svc = (d === 'scene') ? 'turn_on' : service;
+      const key = `${d}.${svc}`;
+      (byDomain[key] = byDomain[key] || []).push(id);
+    }
+    for (const key of Object.keys(byDomain)) {
+      const [d, svc] = key.split('.');
+      let entityId = byDomain[key];
+      // For the light domain, cover as much of the set as possible with Z2M
+      // group entities (each emits a single Zigbee groupcast) and send the
+      // leftovers as one batched call.
+      if (d === 'light') {
+        const plan = this._planGroupedDispatch(entityId, null);
+        for (const groupId of plan.groups) {
+          this._hass.callService(d, svc, { entity_id: groupId })
+            .catch(err => console.warn(`[spatial-light-card] ${d}.${svc} (group) failed:`, err));
+        }
+        if (plan.groups.length > 0) {
+          entityId = plan.uncovered.filter(id => id.startsWith('light.'));
+          if (entityId.length === 0) continue;
+        }
+      }
+      this._hass.callService(d, svc, { entity_id: entityId })
+        .catch(err => console.warn(`[spatial-light-card] ${d}.${svc} bulk failed:`, err));
+    }
+  }
+
+  _openMoreInfo(entity) {
+    this._moreInfoOpen = true;
+    this._syncOverlayState();
+    this.dispatchEvent(new CustomEvent('hass-more-info', {
+      detail: { entityId: entity },
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
+  /** ---------- Action handler for canvas elements ---------- */
+  _handleAction(actionConfig, elementConfig) {
+    if (!actionConfig || actionConfig.action === 'none') return;
+    switch (actionConfig.action) {
+      case 'navigate':
+        if (actionConfig.navigation_path) {
+          window.history.pushState(null, '', actionConfig.navigation_path);
+          window.dispatchEvent(new Event('location-changed'));
+        }
+        break;
+      case 'url':
+        if (actionConfig.url_path) {
+          window.open(actionConfig.url_path, '_blank', 'noopener');
+        }
+        break;
+      case 'more-info': {
+        const entity = actionConfig.entity || elementConfig?.entity;
+        if (entity) this._openMoreInfo(entity);
+        break;
+      }
+      case 'call-service': {
+        const svc = actionConfig.service;
+        if (svc && this._hass) {
+          const [domain, service] = svc.split('.', 2);
+          if (domain && service) {
+            this._hass.callService(domain, service, actionConfig.service_data || actionConfig.data || {});
+          }
+        }
+        break;
+      }
+      case 'toggle': {
+        const entity = actionConfig.entity || elementConfig?.entity;
+        if (entity) this._toggleEntity(entity);
+        break;
+      }
+      case 'fire-dom-event':
+        this.dispatchEvent(new CustomEvent('ll-custom', {
+          detail: actionConfig,
+          bubbles: true,
+          composed: true,
+        }));
+        break;
+    }
+  }
+
+  /** ---------- Auto-layout / rearrange ---------- */
+  _initializePositions() {
+    const unpos = this._config.entities.filter(e => !this._config.positions[e]);
+    if (unpos.length === 0) return;
+
+    const cols = Math.ceil(Math.sqrt(unpos.length * 1.5));
+    const rows = Math.ceil(unpos.length / cols);
+    const spacing = 100 / (cols + 1);
+
+    unpos.forEach((entity, idx) => {
+      const col = idx % cols;
+      const row = Math.floor(idx / cols);
+      this._config.positions[entity] = {
+        x: spacing * (col + 1),
+        y: (100 / (rows + 1)) * (row + 1),
+      };
+    });
+  }
+
+  _rearrangeAllLights() {
+    // Cancel any active interactions first
+    this._cancelActiveInteractions();
+
+    const entities = this._config.entities;
+    const cols = Math.ceil(Math.sqrt(entities.length * 1.5));
+    const rows = Math.ceil(entities.length / cols);
+    const spacing = 100 / (cols + 1);
+
+    const previousPositions = this._clonePositions();
+    const newPositions = {};
+    entities.forEach((entity, idx) => {
+      const col = idx % cols;
+      const row = Math.floor(idx / cols);
+      const pos = {
+        x: spacing * (col + 1),
+        y: (100 / (rows + 1)) * (row + 1),
+      };
+      newPositions[entity] = pos;
+    });
+
+    this._config.positions = newPositions;
+    this._saveHistory(previousPositions);
+    this._saveHistory(newPositions);
+    this._smoothApplyPositions();
+    this.updateLights();
+  }
+
+  _smoothApplyPositions() {
+    // Smoothly transition existing DOM nodes instead of full re-render
+    const lights = this.shadowRoot.querySelectorAll('.light');
+    lights.forEach(light => {
+      const entity = light.dataset.entity;
+      const pos = this._config.positions[entity];
+      if (pos) {
+        light.style.transition = 'left 200ms ease, top 200ms ease';
+        light.style.left = `${pos.x}%`;
+        light.style.top = `${pos.y}%`;
+        // Remove transition after complete to avoid future lag
+        setTimeout(() => {
+          if (light) light.style.transition = '';
+        }, 250);
+      }
+    });
+    // Controls may rely on selection state; keep as-is.
+  }
+
+  /** ---------- History ---------- */
+  _saveHistory(snapshot = null) {
+    const snapshotPositions = this._clonePositions(snapshot || this._config.positions);
+    const last = this._history[this._historyIndex];
+    if (last && JSON.stringify(last) === JSON.stringify(snapshotPositions)) return;
+
+    this._history = this._history.slice(0, this._historyIndex + 1);
+    this._history.push(snapshotPositions);
+    if (this._history.length > 50) {
+      this._history.shift();
+      this._historyIndex = this._history.length - 1;
+    } else {
+      this._historyIndex++;
+    }
+  }
+  _undo() {
+    if (this._historyIndex > 0) {
+      this._historyIndex--;
+      this._config.positions = this._clonePositions(this._history[this._historyIndex]);
+      this._smoothApplyPositions();
+    }
+  }
+  _redo() {
+    if (this._historyIndex < this._history.length - 1) {
+      this._historyIndex++;
+      this._config.positions = this._clonePositions(this._history[this._historyIndex]);
+      this._smoothApplyPositions();
+    }
+  }
+
+  /** ---------- Grid snap ---------- */
+  _shouldSnap(event) {
+    return event?.altKey || !this._snapOnModifier;
+  }
+  _snapToGrid(x, y, event) {
+    if (!this._shouldSnap(event)) return { x, y };
+    const canvas = this._els.canvas;
+    if (!canvas) return { x, y };
+    const rect = canvas.getBoundingClientRect();
+    const px = (x / 100) * rect.width;
+    const py = (y / 100) * rect.height;
+    const sx = Math.round(px / this._gridSize) * this._gridSize;
+    const sy = Math.round(py / this._gridSize) * this._gridSize;
+    return { x: (sx / rect.width) * 100, y: (sy / rect.height) * 100 };
+  }
+
+  /** ---------- Aggregated state of selected lights ---------- */
+  _getControlledEntities() {
+    if (this._selectedLights.size > 0) {
+      return [...this._selectedLights];
+    }
+    if (this._config.default_entity) {
+      return [this._config.default_entity];
+    }
+    return [];
+  }
+
+  _clampTemperature(value, range) {
+    if (!range) return value;
+    return Math.max(range.min, Math.min(range.max, value));
+  }
+
+  _clonePositions(source = this._config.positions) {
+    return JSON.parse(JSON.stringify(source || {}));
+  }
+
+  _resolveTemperatureRange(controlled) {
+    const explicitMin = Number.isFinite(this._config.temperature_min) ? this._config.temperature_min : null;
+    const explicitMax = Number.isFinite(this._config.temperature_max) ? this._config.temperature_max : null;
+
+    let minK = explicitMin ?? Infinity;
+    let maxK = explicitMax ?? -Infinity;
+
+    const pool = (controlled && controlled.length > 0) ? controlled : this._config.entities;
+
+    pool.forEach(entity_id => {
+      const st = this._hass?.states?.[entity_id];
+      if (!st) return;
+      const attrs = st.attributes || {};
+
+      const minKelvinAttr = attrs.min_color_temp_kelvin != null ? Number(attrs.min_color_temp_kelvin) : NaN;
+      const maxKelvinAttr = attrs.max_color_temp_kelvin != null ? Number(attrs.max_color_temp_kelvin) : NaN;
+      if (Number.isFinite(minKelvinAttr) && Number.isFinite(maxKelvinAttr)) {
+        minK = Math.min(minK, Math.round(minKelvinAttr));
+        maxK = Math.max(maxK, Math.round(maxKelvinAttr));
+        return;
+      }
+
+      const maxMireds = attrs.max_mireds != null ? Number(attrs.max_mireds) : NaN;
+      const minMireds = attrs.min_mireds != null ? Number(attrs.min_mireds) : NaN;
+      if (Number.isFinite(maxMireds) && Number.isFinite(minMireds)) {
+        const warm = Math.round(1000000 / maxMireds);
+        const cool = Math.round(1000000 / minMireds);
+        minK = Math.min(minK, warm);
+        maxK = Math.max(maxK, cool);
+        return;
+      }
+
+      const colorTempKelvin = attrs.color_temp_kelvin != null ? Number(attrs.color_temp_kelvin) : NaN;
+      if (Number.isFinite(colorTempKelvin)) {
+        const current = Math.round(colorTempKelvin);
+        minK = Math.min(minK, current);
+        maxK = Math.max(maxK, current);
+        return;
+      }
+
+      const colorTempMired = attrs.color_temp != null ? Number(attrs.color_temp) : NaN;
+      if (Number.isFinite(colorTempMired)) {
+        const current = Math.round(1000000 / colorTempMired);
+        minK = Math.min(minK, current);
+        maxK = Math.max(maxK, current);
+      }
+    });
+
+    if (!Number.isFinite(minK)) minK = explicitMin ?? 2000;
+    if (!Number.isFinite(maxK)) maxK = explicitMax ?? 6500;
+
+    if (explicitMin != null) minK = explicitMin;
+    if (explicitMax != null) maxK = explicitMax;
+
+    minK = Math.max(1000, Math.round(minK));
+    maxK = Math.min(10000, Math.round(maxK));
+
+    if (minK >= maxK) {
+      const base = Math.max(1000, Math.round((minK + maxK) / 2) || 3000);
+      minK = Math.max(1000, base - 100);
+      maxK = Math.max(minK + 100, base + 100);
+    }
+
+    return { min: minK, max: maxK };
+  }
+
+  _isEntityAvailable(id) {
+    const st = this._hass?.states?.[id];
+    if (!st) return false;
+    return st.state !== 'unavailable' && st.state !== 'unknown';
+  }
+
+  // Returns the union of capabilities across `controlled` lights — a control
+  // surface is enabled if ANY light in the selection supports it. Switches,
+  // scenes, and unavailable entities don't contribute capabilities.
+  _getControlCapabilities(controlled) {
+    const RGB_MODES = SpatialLightColorCard.RGB_COLOR_MODES;
+    const caps = { rgb: false, color_temp: false, brightness: false, anyLight: false };
+    for (const id of controlled) {
+      if (!id.startsWith('light.')) continue;
+      if (!this._isEntityAvailable(id)) continue;
+      caps.anyLight = true;
+      const modes = this._hass?.states?.[id]?.attributes?.supported_color_modes;
+      if (!Array.isArray(modes) || modes.length === 0) {
+        // Older integrations may omit supported_color_modes — assume full capability
+        // to avoid false negatives that disable working controls.
+        caps.rgb = true; caps.color_temp = true; caps.brightness = true;
+        continue;
+      }
+      if (modes.some(m => RGB_MODES.has(m))) caps.rgb = true;
+      if (modes.includes('color_temp')) caps.color_temp = true;
+      // Anything other than ['onoff'] alone supports brightness
+      if (!(modes.length === 1 && modes[0] === 'onoff')) caps.brightness = true;
+    }
+    return caps;
+  }
+
+  // Returns the subset of `controlled` that are available `light.*` entities
+  // and (optionally) support a specific capability ('rgb', 'color_temp', 'brightness').
+  _getServiceTargets(controlled, capability) {
+    const RGB_MODES = SpatialLightColorCard.RGB_COLOR_MODES;
+    return controlled.filter(id => {
+      if (!id.startsWith('light.')) return false;
+      if (!this._isEntityAvailable(id)) return false;
+      if (!capability) return true;
+      const modes = this._hass?.states?.[id]?.attributes?.supported_color_modes;
+      if (!Array.isArray(modes) || modes.length === 0) return true; // unknown → assume yes
+      if (capability === 'rgb') return modes.some(m => RGB_MODES.has(m));
+      if (capability === 'color_temp') return modes.includes('color_temp');
+      if (capability === 'brightness') return !(modes.length === 1 && modes[0] === 'onoff');
+      return true;
+    });
+  }
+
+  _planGroupedDispatch(controlled, capability, effectName) {
+    const inputList = Array.isArray(controlled) ? controlled : [];
+    const empty = { groups: [], uncovered: [...inputList] };
+    if (!this._zigbeeGroups || this._zigbeeGroups.size === 0) return empty;
+    if (inputList.length < 2) return empty;
+
+    const lightSet = new Set();
+    for (const id of inputList) if (id.startsWith('light.')) lightSet.add(id);
+    if (lightSet.size < 2) return empty;
+
+    // Eligible groups: members entirely within selection, group entity
+    // available, and group entity supports the requested capability.
+    const candidates = [];
+    for (const [groupId, members] of this._zigbeeGroups) {
+      if (!(members instanceof Set) || members.size < 2) continue;
+      let allIn = true;
+      for (const m of members) { if (!lightSet.has(m)) { allIn = false; break; } }
+      if (!allIn) continue;
+      if (!this._isEntityAvailable(groupId)) continue;
+      if (!this._groupSupportsCapability(groupId, capability, effectName)) continue;
+      candidates.push({ groupId, members });
+    }
+    if (candidates.length === 0) return empty;
+
+    // Choose a covering subset that minimizes
+    //   cost = (# picked groups) + (# selected lights not covered),
+    // i.e. the total number of Zigbee transmissions the platform will emit
+    // (each groupcast is 1, each leftover unicast is 1). Set cover is
+    // NP-hard in general, but with K candidates we only enumerate 2^K
+    // subsets and home setups put K in the single digits. Bitmasks over
+    // the selection make per-subset evaluation O(K). Above the cap we
+    // fall back to greedy (H_d-approximation, suboptimal worst case but
+    // robust for our cost function).
+    const EXACT_CAP = 20;
+    const pickedCands = candidates.length <= EXACT_CAP
+      ? this._optimalCover(candidates, lightSet)
+      : this._greedyCover(candidates, lightSet);
+    if (pickedCands.length === 0) return empty;
+
+    const coveredLights = new Set();
+    for (const cand of pickedCands) for (const m of cand.members) coveredLights.add(m);
+
+    // Uncovered: non-light entities pass through; lights pass through only
+    // if not covered by a picked group.
+    const uncovered = [];
+    for (const id of inputList) {
+      if (id.startsWith('light.') && coveredLights.has(id)) continue;
+      uncovered.push(id);
+    }
+    return { groups: pickedCands.map(c => c.groupId), uncovered };
+  }
+
+  // Optimal cover by exhaustive subset enumeration. Each subset's coverage
+  // is the bitwise OR of its candidates' member-index masks; the cost is
+  // popcount(picked) + (|universe| - popcount(coverage)). For up to 30
+  // selected lights the mask fits in a 32-bit Number; beyond that we use
+  // BigInt so very large selections still work.
+  _optimalCover(candidates, lightSet) {
+    const K = candidates.length;
+    if (K === 0) return [];
+    const universe = [...lightSet];
+    const N = universe.length;
+    const idxOf = new Map(universe.map((id, i) => [id, i]));
+    const useBig = N > 30;
+
+    const masks = new Array(K);
+    if (useBig) {
+      for (let i = 0; i < K; i++) {
+        let m = 0n;
+        for (const id of candidates[i].members) {
+          const idx = idxOf.get(id);
+          if (idx !== undefined) m |= 1n << BigInt(idx);
+        }
+        masks[i] = m;
+      }
+    } else {
+      for (let i = 0; i < K; i++) {
+        let m = 0;
+        for (const id of candidates[i].members) {
+          const idx = idxOf.get(id);
+          if (idx !== undefined) m |= 1 << idx;
+        }
+        masks[i] = m;
+      }
+    }
+
+    const totalSubsets = 1 << K;
+    let bestCost = N;          // empty subset: 0 groups, all uncovered
+    let bestMask = 0;
+    if (useBig) {
+      for (let s = 1; s < totalSubsets; s++) {
+        let cov = 0n;
+        let cnt = 0;
+        for (let i = 0; i < K; i++) {
+          if (s & (1 << i)) { cov |= masks[i]; cnt++; }
+        }
+        let covered = 0;
+        let x = cov;
+        while (x > 0n) { if (x & 1n) covered++; x >>= 1n; }
+        const cost = cnt + N - covered;
+        if (cost < bestCost) { bestCost = cost; bestMask = s; }
+      }
+    } else {
+      for (let s = 1; s < totalSubsets; s++) {
+        let cov = 0;
+        let cnt = 0;
+        for (let i = 0; i < K; i++) {
+          if (s & (1 << i)) { cov |= masks[i]; cnt++; }
+        }
+        // 32-bit Hamming weight (SWAR)
+        let v = cov;
+        v = v - ((v >>> 1) & 0x55555555);
+        v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);
+        const covered = (((v + (v >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
+        const cost = cnt + N - covered;
+        if (cost < bestCost) { bestCost = cost; bestMask = s; }
+      }
+    }
+
+    const picked = [];
+    for (let i = 0; i < K; i++) if (bestMask & (1 << i)) picked.push(candidates[i]);
+    return picked;
+  }
+
+  _greedyCover(candidates, lightSet) {
+    const remaining = new Set(lightSet);
+    const remainingCandidates = new Set(candidates);
+    const picked = [];
+    while (remainingCandidates.size > 0) {
+      let best = null;
+      let bestCount = 0;
+      for (const cand of remainingCandidates) {
+        let count = 0;
+        for (const m of cand.members) if (remaining.has(m)) count++;
+        if (count > bestCount) { best = cand; bestCount = count; }
+      }
+      if (!best || bestCount < 2) break;
+      picked.push(best);
+      for (const m of best.members) remaining.delete(m);
+      remainingCandidates.delete(best);
+    }
+    return picked;
+  }
+
+  _groupSupportsCapability(groupId, capability, effectName) {
+    if (!capability) return true;
+    const attrs = this._hass?.states?.[groupId]?.attributes || {};
+    const modes = attrs.supported_color_modes;
+    if (capability === 'rgb') {
+      if (!Array.isArray(modes) || modes.length === 0) return true;
+      return modes.some(m => SpatialLightColorCard.RGB_COLOR_MODES.has(m));
+    }
+    if (capability === 'color_temp') {
+      if (!Array.isArray(modes) || modes.length === 0) return true;
+      return modes.includes('color_temp');
+    }
+    if (capability === 'effect') {
+      const list = attrs.effect_list;
+      return Array.isArray(list) && list.includes(effectName);
+    }
+    return true;
+  }
+
+  async _initZigbeeGroupTracking() {
+    if (this._zigbeeGroupsLoaded || this._zigbeeGroupsLoading) return;
+    this._loadZigbeeGroups();
+    if (this._zigbeeGroupsUnsub || !this._hass?.connection) return;
+    try {
+      this._zigbeeGroupsUnsub = await this._hass.connection.subscribeEvents(
+        () => {
+          if (this._zigbeeGroupsRefreshTimer) clearTimeout(this._zigbeeGroupsRefreshTimer);
+          this._zigbeeGroupsRefreshTimer = setTimeout(() => {
+            this._zigbeeGroupsLoaded = false;
+            this._loadZigbeeGroups();
+          }, 1000);
+        },
+        'entity_registry_updated'
+      );
+    } catch (_) { /* subscription not available — non-fatal */ }
+  }
+
+  async _loadZigbeeGroups() {
+    if (!this._hass || this._zigbeeGroupsLoading) return;
+    this._zigbeeGroupsLoading = true;
+    try {
+      const ents = this._hass.entities || {};
+      const states = this._hass.states || {};
+      // Candidates: mqtt-platform light.* entities. `hass.entities` ships with
+      // the display registry which exposes `platform`; this filters out non-
+      // Z2M lights (Hue, ZHA, etc.) before the heavier per-entity fetch.
+      const candidates = Object.keys(states).filter(id => {
+        if (!id.startsWith('light.')) return false;
+        const reg = ents[id];
+        return reg && reg.platform === 'mqtt';
+      });
+
+      const groups = new Map();
+      await Promise.all(candidates.map(async (id) => {
+        try {
+          const entry = await this._hass.callWS({
+            type: 'config/entity_registry/get',
+            entity_id: id,
+          });
+          const members = entry?.capabilities?.group_entities;
+          if (Array.isArray(members) && members.length >= 2) {
+            groups.set(id, new Set(members));
+          }
+        } catch (_) { /* ignore per-entity failures */ }
+      }));
+
+      this._zigbeeGroups = groups;
+      this._zigbeeGroupsLoaded = true;
+    } finally {
+      this._zigbeeGroupsLoading = false;
+    }
+  }
+
+  _getControlContext() {
+    const controlled = this._getControlledEntities();
+
+    let bTot = 0, bCnt = 0;
+    let tTot = 0, tCnt = 0;
+    let rgbTot = [0, 0, 0], rgbCnt = 0;
+
+    controlled.forEach(id => {
+      const st = this._hass?.states?.[id];
+      if (!st || st.state !== 'on') return;
+      if (st.attributes.brightness != null) {
+        bTot += st.attributes.brightness; bCnt++;
+      }
+      if (st.attributes.color_temp_kelvin != null) {
+        const k = Math.round(Number(st.attributes.color_temp_kelvin));
+        if (Number.isFinite(k)) { tTot += k; tCnt++; }
+      } else if (st.attributes.color_temp != null && Number(st.attributes.color_temp) > 0) {
+        const k = Math.round(1000000 / Number(st.attributes.color_temp));
+        if (Number.isFinite(k)) { tTot += k; tCnt++; }
+      }
+      if (Array.isArray(st.attributes.rgb_color)) {
+        rgbTot[0] += st.attributes.rgb_color[0];
+        rgbTot[1] += st.attributes.rgb_color[1];
+        rgbTot[2] += st.attributes.rgb_color[2];
+        rgbCnt++;
+      }
+    });
+
+    const lastRGB = rgbCnt > 0
+      ? [Math.round(rgbTot[0] / rgbCnt), Math.round(rgbTot[1] / rgbCnt), Math.round(rgbTot[2] / rgbCnt)]
+      : null;
+
+    const range = this._resolveTemperatureRange(controlled);
+
+    const avgBrightness = bCnt ? Math.round(bTot / bCnt) : 128;
+    const avgTemperatureRaw = tCnt ? Math.round(tTot / tCnt) : Math.round((range.min + range.max) / 2);
+    const avgTemperature = this._clampTemperature(avgTemperatureRaw, range);
+
+    return {
+      controlled,
+      avgState: {
+        brightness: avgBrightness,
+        temperature: avgTemperature,
+        color: lastRGB,
+      },
+      tempRange: range,
+    };
+  }
+
+  /** ---------- Rendering ---------- */
+  _renderAll() {
+    // Releases any in-flight pointer capture, drag/long-press timers, and
+    // commits any pending slider value before the shadow DOM is rebuilt
+    // (otherwise the gesture's listeners are attached to elements we're about
+    // to destroy and the user's pending input is lost).
+    this._cancelActiveInteractions();
+
+    // The shadow DOM is about to be wiped — the new canvas elements will be
+    // blank, so any cached "last drawn at this size" key from the previous
+    // render is now stale. Without clearing this, the cache check in
+    // `drawColorWheel` would short-circuit and leave the new canvas empty.
+    this._colorWheelLastSize = null;
+    this._colorWheelZeroRetries = 0;
+
+    const controlContext = this._getControlContext();
+    const avgState = controlContext.avgState;
+    const showControls = this._config.always_show_controls || this._selectedLights.size > 0 || this._config.default_entity;
+    const controlsPosition = this._config.controls_below ? 'below' : 'floating';
+    const showHeader = !!this._config.title;
+
+    this.shadowRoot.innerHTML = `
+      <style>
+        ${this._styles()}
+      </style>
+      <ha-card>
+        ${showHeader ? this._renderHeader() : ''}
+        <div class="canvas-wrapper">
+          <div class="canvas" id="canvas" role="application" aria-label="Spatial light control area" style="${this._canvasBackgroundStyle()}">
+            <div class="grid"></div>
+            ${this._config.entities.length === 0 ? this._renderEmptyState() : this._renderLightsHTML()}
+            ${this._renderCanvasElementsHTML()}
+            ${controlsPosition === 'floating' ? this._renderControlsFloating(showControls, controlContext) : ''}
+          </div>
+          ${controlsPosition === 'below' ? this._renderControlsBelow(controlContext) : ''}
+        </div>
+        ${this._renderYamlModal()}
+      </ha-card>
+      ${this._renderLargeColorWheel()}
+    `;
+
+    // Cache refs once
+    this._els.canvas = this.shadowRoot.getElementById('canvas');
+    this._els.controlsFloating = this.shadowRoot.getElementById('controlsFloating');
+    this._els.controlsBelow = this.shadowRoot.getElementById('controlsBelow');
+    this._els.brightnessSlider = this.shadowRoot.getElementById('brightnessSlider');
+    this._els.brightnessValue = this.shadowRoot.getElementById('brightnessValue');
+    this._els.temperatureSlider = this.shadowRoot.getElementById('temperatureSlider');
+    this._els.temperatureValue = this.shadowRoot.getElementById('temperatureValue');
+    this._els.colorWheel = this.shadowRoot.getElementById('colorWheelMini');
+    this._els.yamlModal = this.shadowRoot.getElementById('yamlModal');
+    this._els.yamlOutput = this.shadowRoot.getElementById('yamlOutput');
+    // Populate the YAML modal contents via textContent (NOT innerHTML) so that
+    // user-controlled config values (title, labels, entity IDs, etc.) cannot
+    // become HTML at render time.
+    if (this._els.yamlOutput) {
+      this._els.yamlOutput.textContent = this._generateYAML();
+    }
+    this._els.colorWheelOverlay = this.shadowRoot.getElementById('colorWheelOverlay');
+    this._els.colorWheelLarge = this.shadowRoot.getElementById('colorWheelLarge');
+    this._els.colorWheelMagnifier = this.shadowRoot.getElementById('colorWheelMagnifier');
+    this._els.colorWheelMagnifierCanvas = this.shadowRoot.getElementById('colorWheelMagnifierCanvas');
+    this._els.colorWheelPreviewSwatch = this.shadowRoot.getElementById('colorWheelPreviewSwatch');
+
+    if (this._colorWheelObserver) {
+      this._colorWheelObserver.disconnect();
+      this._colorWheelObserver = null;
+    }
+    if (this._els.colorWheel && typeof window !== 'undefined' && 'ResizeObserver' in window) {
+      this._colorWheelObserver = new ResizeObserver(() => {
+        this._requestColorWheelDraw(true);
+      });
+      this._colorWheelObserver.observe(this._els.colorWheel);
+    }
+
+    // Watch the main canvas so glow walls re-render when its size changes
+    // (initial layout flush, browser resize, dashboard tab becoming visible).
+    // Previously the original code happened to recompute walls on the next
+    // `set hass` push — but with the relevance-diff in `set hass`, an
+    // unrelated state push would no longer trigger that, so walls could stay
+    // unrendered for a long time after first paint. This observer makes wall
+    // rendering independent of HA state events.
+    if (this._canvasObserver) {
+      this._canvasObserver.disconnect();
+      this._canvasObserver = null;
+    }
+    if (this._els.canvas && typeof window !== 'undefined' && 'ResizeObserver' in window) {
+      this._canvasObserver = new ResizeObserver(() => {
+        // Cheap when nothing actually needs to change — `_applyWallShadows`
+        // version-keys per entity and bails out on cache hit.
+        this._updateAllGlows();
+      });
+      this._canvasObserver.observe(this._els.canvas);
+    }
+
+    this._attachEventListeners();
+    if ((showControls || this._config.always_show_controls) && this._els.colorWheel) {
+      const raf = typeof requestAnimationFrame === 'function'
+        ? requestAnimationFrame
+        : (cb) => setTimeout(cb, 16);
+      raf(() => {
+        this._requestColorWheelDraw(true);
+      });
+      this._updateControlValues(controlContext);
+    }
+    this._syncOverlayState();
+    this.updateLights();
+    this._refreshEntityIcons();
+    requestAnimationFrame(() => this._updateSeparatorVisibility());
+    // The canvas ResizeObserver registered above fires on initial observation
+    // with the post-layout size, so glow walls get a definitive recompute as
+    // soon as the canvas is laid out — no extra rAF needed here.
+    // ha-icon often upgrades over several frames as the MDI iconset loads;
+    // and the color-wheel canvas needs the parent controls box to be laid
+    // out before it has a non-zero size. Both can be intermittent on cold
+    // loads. Run a short rAF-chained recovery — each call is idempotent and
+    // bails as soon as everything is rendered.
+    let recoveryTicks = 0;
+    const recoveryTick = () => {
+      if (recoveryTicks++ >= 8 || !this.shadowRoot) return;
+      this._refreshEntityIcons();
+      // Force-redraw the wheel each tick. `drawColorWheel` skips when the
+      // canvas size hasn't changed, so this is a no-op once the wheel is
+      // painted. When the parent controls box transitions from
+      // `display: none` → `display: grid` (selection arrives), the canvas
+      // gets a real size and the next tick paints it.
+      if (this._els.colorWheel) this._requestColorWheelDraw(true);
+      requestAnimationFrame(recoveryTick);
+    };
+    requestAnimationFrame(recoveryTick);
+    this._subscribeTemplates();
+  }
+
+  _styles() {
+    return `
+      *, *::before, *::after { box-sizing: border-box; }
+      :host {
+        margin: 0; padding: 0;
+        --surface-primary: #0a0a0a;
+        --surface-secondary: #141414;
+        --surface-tertiary: #1a1a1a;
+        --surface-elevated: #1f1f1f;
+
+        --text-primary: #ffffff;
+        --text-secondary: rgba(255,255,255,0.7);
+        --text-tertiary: rgba(255,255,255,0.45);
+
+        --border-subtle: rgba(255,255,255,0.06);
+        --border-medium: rgba(255,255,255,0.12);
+
+        --accent-primary: #6366f1;
+
+        --grid-dots: rgba(255,255,255,0.035);
+
+        --shadow-sm: 0 1px 2px rgba(0,0,0,0.35);
+        --shadow-md: 0 4px 8px rgba(0,0,0,0.45);
+
+        --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+
+        --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px; --radius-full: 9999px;
+
+        --transition-fast: 120ms cubic-bezier(0.4,0,0.2,1);
+        --transition-base: 200ms cubic-bezier(0.4,0,0.2,1);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        :host { --transition-fast: 0ms; --transition-base: 0ms; }
+        * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+      }
+      ha-card {
+        background: var(--surface-primary);
+        overflow: hidden;
+        font-family: var(--font-sans);
+        position: relative;
+        z-index: 0;
+      }
+
+      .header {
+        padding: 16px 20px; display: flex; justify-content: space-between; align-items: center;
+        border-bottom: 1px solid var(--border-subtle); background: var(--surface-secondary);
+      }
+      .title { font-size: 14px; font-weight: 600; color: var(--text-secondary); letter-spacing: -0.01em; }
+
+      .canvas-wrapper { position: relative; }
+      .canvas {
+        position: relative; width: 100%; height: ${this._config.canvas_height}px; background: var(--surface-primary);
+        overflow: hidden; user-select: none; touch-action: none;
+      }
+      .canvas::before {
+        content: ''; position: absolute; inset: 0;
+        background-image: var(--canvas-background-image, none);
+        background-size: var(--canvas-background-size, cover);
+        background-position: var(--canvas-background-position, center);
+        background-repeat: var(--canvas-background-repeat, no-repeat);
+        mix-blend-mode: var(--canvas-background-blend-mode, normal);
+        opacity: var(--canvas-background-opacity, 1);
+        pointer-events: none; z-index: 0;
+      }
+      .grid {
+        position: absolute; inset: 0;
+        background-image: radial-gradient(circle, var(--grid-dots) 1px, transparent 1px);
+        background-size: ${this._gridSize}px ${this._gridSize}px; pointer-events: none;
+      }
+
+      .light {
+        --light-size: ${this._config.light_size}px;
+        --icon-scale: 1;
+        position: absolute; width: var(--light-size); height: var(--light-size); border-radius: var(--radius-full);
+        transform: translate(-50%,-50%); cursor: ${(this._lockPositions && !this._editPositionsMode) ? 'pointer' : 'grab'};
+        display:flex; align-items:center; justify-content:center; flex-direction:column;
+        z-index: 1;
+        transition: opacity 200ms ease, filter 200ms ease;
+      }
+      /* H22: dropped box-shadow and border-color from the transition.
+         Mobile caches box-shadow color transitions that resolve through
+         var(--light-color) and does not refresh the rendered shadow when
+         the variable changes mid-transition, leaving the old color stuck
+         outside the light. Color changes are instant now; background-color
+         still fades for the body color in standard mode. */
+      .light::before { content:''; position:absolute; inset:0; border-radius:inherit; background:inherit; box-shadow: var(--shadow-sm); transition: border-width 200ms ease, background-color 200ms ease, inset 200ms ease; }
+      .light.on::after {
+        content:''; position:absolute; inset:-6px; border-radius:inherit; background:inherit; filter: blur(10px);
+        opacity: 0.22; z-index: -1;
+      }
+      /* Remove forced gradient, allow JS to override background if needed */
+      .light.off { opacity: 0.55; }
+      .light.off:not([style*="background"]) { background: linear-gradient(135deg,#3a3a3a 0%, #2a2a2a 100%); }
+      .light.off::after { display:none; }
+
+      /* Icon-only mode styles */
+      .light.icon-only {
+        background: transparent !important;
+      }
+      .light.icon-only::before {
+        background: transparent;
+        box-shadow: none;
+        border: 2px solid var(--light-border-baked, var(--light-color, rgba(255,255,255,0.3)));
+      }
+      .light.icon-only.on::before {
+        border-color: var(--light-border-baked, var(--light-color, #ffa500));
+        box-shadow: var(--light-shadow-baked, 0 0 8px var(--light-color, #ffa500));
+      }
+      .light.icon-only.off::before {
+        border-color: rgba(255,255,255,0.25);
+        box-shadow: none;
+      }
+      .light.icon-only::after {
+        display: none;
+      }
+      .light.icon-only .light-icon-mdi {
+        color: var(--light-color, rgba(255,255,255,0.7));
+        filter: drop-shadow(0 1px 3px rgba(0,0,0,0.8));
+      }
+      .light.icon-only.off .light-icon-mdi {
+        color: rgba(255,255,255,0.6);
+      }
+      .light.icon-only.off { opacity: 0.8; }
+      /* Selection indicator for icon-only mode */
+      .light.icon-only.selected::before {
+        border-color: var(--accent-primary);
+        border-width: 2.5px;
+        background: rgba(99,102,241,0.1);
+        box-shadow: 0 0 0 1px rgba(99,102,241,0.3), 0 0 12px rgba(99,102,241,0.55);
+      }
+      .light.icon-only.selected.on::before {
+        border-color: var(--accent-primary);
+        background: rgba(99,102,241,0.08);
+        box-shadow: 0 0 0 1px rgba(99,102,241,0.3), 0 0 12px rgba(99,102,241,0.55), var(--light-shadow-baked, 0 0 8px var(--light-color, #ffa500));
+      }
+
+      /* Minimal UI mode - hides circles completely, shows only icons */
+      .light.minimal-ui {
+        background: transparent !important;
+      }
+      .light.minimal-ui::before {
+        background: transparent;
+        box-shadow: none;
+        border: none;
+      }
+      .light.minimal-ui::after {
+        display: none;
+      }
+      .light.minimal-ui .light-icon-mdi {
+        color: var(--light-color, rgba(255,255,255,0.85));
+        filter: drop-shadow(0 1px 4px rgba(0,0,0,0.9)) drop-shadow(0 0 2px rgba(0,0,0,0.5));
+      }
+      .light.minimal-ui.on .light-icon-mdi {
+        /* Colored glow comes from .light-halo, not the drop-shadow filter.
+           iOS clipped the var-resolved drop-shadow to the icon's bounding
+           rectangle and cached it, leaving a visible rectangle of stale
+           color around the icon after color changes. */
+        filter: drop-shadow(0 1px 3px rgba(0,0,0,0.8));
+      }
+      .light.minimal-ui.off .light-icon-mdi {
+        color: rgba(255,255,255,0.55);
+      }
+      .light.minimal-ui.off {
+        opacity: 1;
+      }
+      /* Show circle with accent highlight when selected in minimal mode */
+      .light.minimal-ui.selected::before {
+        border: 2px solid var(--accent-primary);
+        background: rgba(99,102,241,0.12);
+        box-shadow: 0 0 10px rgba(99,102,241,0.45);
+      }
+      .light.minimal-ui.selected.on::before {
+        border-color: var(--accent-primary);
+        background: rgba(99,102,241,0.08);
+        box-shadow: 0 0 10px rgba(99,102,241,0.45), var(--light-shadow-baked, 0 0 8px var(--light-color, #ffa500));
+      }
+
+      /* Glow element — works in all display modes (cone, round, oval, beam, spotlight, bar) */
+      .light-glow {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 60px;
+        height: 0;
+        transform-origin: 50% 0%;
+        pointer-events: none;
+        z-index: -1;
+        opacity: 0;
+        transition: opacity 400ms ease, height 400ms ease;
+      }
+      /* Reduce glow for unselected lights when a selection is active.
+         Note: the parent .light already gets brightness/saturate dimming,
+         so only add extra dimming on the glow itself for stronger visual separation. */
+      .canvas.has-selection .light:not(.selected) .light-glow {
+        opacity: 0.3 !important;
+      }
+
+      /* Colored halo for icon-only / minimal-ui modes. Replaces the
+         icon's colored drop-shadow filter (which mobile clips to the
+         icon bounding rectangle and caches aggressively). A sibling
+         div with background-color plus a static blur filter keeps the
+         CSS variable in a property mobile invalidates reliably, and
+         the halo has its own bounds so it can extend past the icon
+         rectangle without clipping. */
+      .light-halo {
+        /* A 2px invisible point whose box-shadow renders the soft
+           colored glow. Using box-shadow instead of filter:blur means
+           there's no filter region — the shadow paints as part of the
+           canvas's normal rendering and isn't clipped to a rectangular
+           layer bounding box. The .light element no longer has
+           will-change either, so neither parent nor halo is promoted
+           to a permanent compositor layer. box-shadow is set inline by
+           updateLights with the color baked in literally. */
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 2px;
+        height: 2px;
+        transform: translate(-50%, -50%);
+        border-radius: 50%;
+        background: transparent;
+        opacity: 0;
+        pointer-events: none;
+        z-index: -1;
+      }
+      .canvas.has-selection .light:not(.selected) .light-halo {
+        opacity: 0.25 !important;
+      }
+
+      .light-icon-emoji { font-size: calc(32px * var(--icon-scale, 1)); line-height: 1; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); transform: var(--icon-transform, none); }
+      .light-icon-mdi { --mdc-icon-size: calc(32px * var(--icon-scale, 1)); color: rgba(255,255,255,0.92); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); transform: var(--icon-transform, none); }
+
+      .light-label {
+        position: absolute; top: calc(100% + 8px); left: 50%;
+        transform: translateX(calc(-50% + var(--label-offset, 0px)));
+        padding: 4px 8px; background: var(--surface-elevated); color: var(--text-primary);
+        font-size: 11px; font-weight: 600; border-radius: var(--radius-sm); white-space: nowrap; pointer-events: none;
+        opacity: 0; transition: opacity var(--transition-fast); z-index: 5; border: 1px solid var(--border-subtle);
+      }
+      /* Label position variants to avoid overlap with nearby lights */
+      .light-label[data-pos="above"] { top: auto; bottom: calc(100% + 8px); left: 50%; transform: translateX(calc(-50% + var(--label-offset, 0px))); }
+      .light-label[data-pos="right"] { top: 50%; left: calc(100% + 8px); transform: translateY(calc(-50% + var(--label-offset, 0px))); }
+      .light-label[data-pos="left"] { top: 50%; left: auto; right: calc(100% + 8px); transform: translateY(calc(-50% + var(--label-offset, 0px))); }
+      /* Only show label on hover for devices with a real pointer (mouse/trackpad).
+         On touch, :hover sticks from pointerdown but _repositionLabels() doesn't
+         run until pointerup (selection), causing a 1-frame flash at the stale position. */
+      @media (hover: hover) {
+        .light:hover .light-label { opacity: 1; }
+      }
+
+      .light.selected { z-index: 3; }
+      .light.selected::before {
+        box-shadow: 0 0 0 2.5px rgba(99,102,241,0.9), 0 0 0 5px rgba(99,102,241,0.25), 0 0 15px rgba(99,102,241,0.5);
+      }
+      /* Selected off lights should be more visible than normal off lights */
+      .light.selected.off { opacity: 0.82; }
+      .light.selected.off.icon-only { opacity: 0.92; }
+      .light.selected.off.minimal-ui { opacity: 1; }
+      /* Always show label for selected lights */
+      .light.selected .light-label { opacity: 1; }
+      /* Dim unselected lights when a selection is active to increase contrast */
+      .canvas.has-selection .light:not(.selected) { filter: brightness(0.55) saturate(0.6); }
+      .canvas.has-selection .light.off:not(.selected) { filter: brightness(0.45) saturate(0.5); }
+
+      .light.preset-highlight::before {
+        box-shadow: 0 0 0 2.5px rgba(255,255,255,0.7), 0 0 16px rgba(255,255,255,0.35) !important;
+      }
+      .light.preset-highlight { z-index: 4; filter: brightness(1.2) !important; }
+      /* Raise hovered light above siblings so its label isn't hidden behind other lights.
+         Placed after .selected and .preset-highlight so hover z-index wins on same specificity. */
+      .light:hover { z-index: 7; }
+
+      .light.dragging { cursor: grabbing; z-index: 8; transform: translate(-50%,-50%) scale(1.04); }
+
+      /* H18: visible focus rings. The card disables outlines elsewhere; these
+         rules give keyboard users a clear indicator on every interactive
+         element (only when navigating by keyboard, thanks to :focus-visible). */
+      .light:focus { outline: none; }
+      .light:focus-visible {
+        outline: 2px solid var(--accent-primary, #6366f1);
+        outline-offset: 4px;
+        z-index: 9;
+      }
+      .color-preset:focus, .temp-preset:focus, .effect-preset:focus { outline: none; }
+      .color-preset:focus-visible::after,
+      .temp-preset:focus-visible,
+      .effect-preset:focus-visible {
+        box-shadow: 0 0 0 2px var(--accent-primary, #6366f1), 0 0 0 4px rgba(99,102,241,0.35);
+      }
+      .canvas-element:focus { outline: none; }
+      .canvas-element:focus-visible {
+        outline: 2px solid var(--accent-primary, #6366f1);
+        outline-offset: 2px;
+      }
+      .slider:focus-visible {
+        outline: 2px solid var(--accent-primary, #6366f1);
+        outline-offset: 4px;
+        border-radius: 9999px;
+      }
+
+      /* H21: forced-colors / Windows High Contrast support. CSS shadows and
+         many colors are stripped in this mode, so we fall back to system
+         colors and rely on borders/outlines for state. */
+      @media (forced-colors: active) {
+        .light { border: 1px solid CanvasText; background: Canvas !important; }
+        .light.selected { outline: 2px solid Highlight; outline-offset: 2px; }
+        .light.unavailable { border-style: dashed; }
+        .light-status-badge {
+          background: ButtonFace !important;
+          color: ButtonText !important;
+          border: 1px solid CanvasText;
+        }
+        .color-preset, .temp-preset, .effect-preset { border: 1px solid CanvasText; }
+        .color-preset.active, .temp-preset.active, .effect-preset.active {
+          outline: 2px solid Highlight; outline-offset: 1px;
+        }
+        .light:focus-visible,
+        .color-preset:focus-visible,
+        .temp-preset:focus-visible,
+        .effect-preset:focus-visible,
+        .canvas-element:focus-visible,
+        .slider:focus-visible { outline: 2px solid Highlight; }
+        .selection-box { border-color: Highlight; background: transparent; }
+        .preset-separator { background: CanvasText; }
+      }
+
+      /* H10: unavailable indicator. Light is dimmed + slightly desaturated;
+         a small amber "?" badge sits in the top-right of the circle, scaled
+         relative to the light so it stays proportional at any light_size. */
+      .light.unavailable { opacity: 0.55; filter: grayscale(0.5); }
+      .light.unavailable.selected { opacity: 0.75; }
+      .light-status-badge {
+        position: absolute;
+        top: -4%; right: -4%;
+        width: 30%; height: 30%;
+        min-width: 12px; min-height: 12px;
+        max-width: 18px; max-height: 18px;
+        border-radius: 9999px;
+        background: var(--warning-color, #f59e0b);
+        color: #1a1a1a;
+        display: flex; align-items: center; justify-content: center;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-weight: 700; font-size: 10px; line-height: 1;
+        box-shadow: 0 0 0 2px var(--surface-primary, #0a0a0a), 0 1px 3px rgba(0,0,0,0.4);
+        pointer-events: none;
+        z-index: 3;
+      }
+      /* In minimal-ui / icon-only modes the circle background is transparent;
+         shift the badge into the icon's bounding box so it still reads as
+         attached to the entity. */
+      .light.icon-only .light-status-badge,
+      .light.minimal-ui .light-status-badge { top: 0; right: 0; }
+
+      .selection-box {
+        position: absolute; border: 1.5px solid rgba(99,102,241,0.5); background: rgba(99,102,241,0.08);
+        border-radius: 8px; pointer-events: none; backdrop-filter: blur(2px);
+      }
+
+      /* ---------- Canvas elements (links, sensors, templates) ---------- */
+      .canvas-element {
+        position: absolute;
+        transform: translate(-50%, -50%);
+        z-index: 2;
+        cursor: pointer;
+        user-select: none;
+        -webkit-user-select: none;
+        transition: opacity 200ms ease, filter 200ms ease;
+      }
+      /* Don't dim canvas elements when lights are selected */
+      .canvas.has-selection .canvas-element { filter: none; }
+      .canvas-element.dragging { cursor: grabbing; z-index: 6; }
+
+      /* Link type */
+      .canvas-element-link {
+        display: flex; flex-direction: column; align-items: center; gap: 4px;
+      }
+      .canvas-element-link .ce-icon-wrap {
+        display: flex; align-items: center; justify-content: center;
+        border-radius: 50%;
+        background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255,255,255,0.15);
+        transition: background 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+      }
+      .canvas-element-link:hover .ce-icon-wrap,
+      .canvas-element-link:active .ce-icon-wrap {
+        background: rgba(255,255,255,0.15);
+        border-color: rgba(255,255,255,0.3);
+        box-shadow: 0 0 8px rgba(255,255,255,0.1);
+      }
+      .canvas-element-link:active .ce-icon-wrap {
+        transform: scale(0.95);
+      }
+      .canvas-element-link .ce-icon-wrap ha-icon {
+        --mdc-icon-size: 60%;
+        color: var(--ce-color, #ffffff);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .canvas-element-link .ce-label {
+        font-size: 11px; font-weight: 600; color: var(--ce-color, rgba(255,255,255,0.85));
+        white-space: nowrap; pointer-events: none;
+        text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+        opacity: 0; transition: opacity 200ms ease;
+      }
+      .canvas-element-link:hover .ce-label { opacity: 1; }
+
+      /* Sensor type */
+      .canvas-element-sensor {
+        display: flex; align-items: center; gap: 6px;
+        padding: 4px 10px;
+        border-radius: 8px;
+        background: rgba(0,0,0,0.25);
+        backdrop-filter: blur(4px);
+        border: 1px solid rgba(255,255,255,0.06);
+        transition: background 200ms ease;
+      }
+      .canvas-element-sensor:hover {
+        background: rgba(0,0,0,0.4);
+      }
+      .canvas-element-sensor ha-icon {
+        --mdc-icon-size: 18px;
+        color: var(--ce-color, rgba(255,255,255,0.7));
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+      }
+      .canvas-element-sensor .ce-value {
+        font-size: var(--ce-font-size, 14px);
+        font-weight: var(--ce-font-weight, 600);
+        color: var(--ce-color, #ffffff);
+        white-space: nowrap;
+        text-shadow: var(--ce-text-shadow, 0 1px 2px rgba(0,0,0,0.6));
+        line-height: 1.2;
+      }
+      .canvas-element-sensor .ce-label {
+        position: absolute; top: calc(100% + 4px); left: 50%; transform: translateX(-50%);
+        font-size: 10px; color: var(--ce-color, rgba(255,255,255,0.6));
+        white-space: nowrap; pointer-events: none;
+        text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+        opacity: 0; transition: opacity 200ms ease;
+      }
+      .canvas-element-sensor:hover .ce-label { opacity: 1; }
+
+      /* Template type */
+      .canvas-element-template {
+        display: flex; align-items: center; gap: 6px;
+        padding: 3px 8px;
+        border-radius: 6px;
+      }
+      .canvas-element-template ha-icon {
+        --mdc-icon-size: 18px;
+        color: var(--ce-color, rgba(255,255,255,0.7));
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+      }
+      .canvas-element-template .ce-value {
+        font-size: var(--ce-font-size, 14px);
+        font-weight: var(--ce-font-weight, normal);
+        color: var(--ce-color, #ffffff);
+        white-space: pre-wrap;
+        text-shadow: var(--ce-text-shadow, 0 1px 2px rgba(0,0,0,0.6));
+        line-height: 1.3;
+      }
+      .canvas-element-template .ce-label {
+        position: absolute; top: calc(100% + 4px); left: 50%; transform: translateX(-50%);
+        font-size: 10px; color: var(--ce-color, rgba(255,255,255,0.6));
+        white-space: nowrap; pointer-events: none;
+        text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+        opacity: 0; transition: opacity 200ms ease;
+      }
+      .canvas-element-template:hover .ce-label { opacity: 1; }
+
+      /* No-background variants */
+      .canvas-element-link.no-background .ce-icon-wrap {
+        background: transparent;
+        border-color: transparent;
+        box-shadow: none;
+      }
+      .canvas-element-link.no-background:hover .ce-icon-wrap,
+      .canvas-element-link.no-background:active .ce-icon-wrap {
+        background: rgba(255,255,255,0.08);
+        border-color: transparent;
+        box-shadow: none;
+      }
+      .canvas-element-sensor.no-background {
+        background: transparent;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+        border-color: transparent;
+        padding: 2px 4px;
+      }
+      .canvas-element-sensor.no-background:hover {
+        background: rgba(0,0,0,0.15);
+      }
+
+      .controls-floating {
+        position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+        background: rgba(20,20,20,0.95); backdrop-filter: blur(16px) saturate(160%);
+        border: 1px solid var(--border-medium); border-radius: 12px; padding: 16px 20px;
+        display: grid; grid-template-columns: auto 1fr; grid-template-rows: 1fr auto;
+        gap: 12px 20px; align-items: center; box-shadow: var(--shadow-md);
+        opacity: 0; pointer-events: none; transition: opacity var(--transition-base);
+        z-index: 50;
+      }
+      .controls-floating.visible { opacity: 1; pointer-events: auto; }
+
+      .controls-below {
+        padding: 20px; border-top: 1px solid var(--border-subtle); background: var(--surface-secondary);
+        display: none;
+        grid-template-columns: auto 1fr; grid-template-rows: 1fr auto;
+        gap: 12px 24px; align-items: center; justify-content: center;
+      }
+      .controls-below.visible { display: grid; }
+
+      .color-wheel-mini {
+        width: 128px; height: 128px; border-radius: 9999px; cursor: pointer;
+        border: 2px solid var(--border-subtle); box-shadow: var(--shadow-sm); flex-shrink: 0;
+        grid-column: 1; grid-row: 1 / 3; align-self: start;
+      }
+      /* H7: capability gating — keep the layout slot occupied so selection
+         changes don't reflow, but visually mute and block interaction when
+         no controlled light supports the relevant control. */
+      .color-wheel-mini.disabled {
+        opacity: 0.35; cursor: not-allowed; pointer-events: none;
+        filter: grayscale(0.7);
+      }
+      .slider:disabled { opacity: 0.4; cursor: not-allowed; }
+      .controls-floating.no-rgb-support .presets-area .color-preset,
+      .controls-below.no-rgb-support .presets-area .color-preset {
+        opacity: 0.35; pointer-events: none;
+      }
+      .controls-floating.no-temp-support .presets-area .temp-preset,
+      .controls-below.no-temp-support .presets-area .temp-preset {
+        opacity: 0.35; pointer-events: none;
+      }
+
+      .presets-area {
+        grid-column: 2; grid-row: 2;
+        display: flex; flex-wrap: wrap; gap: 0; align-items: center;
+        margin-left: -4px; /* Align visual preset circles with slider left edge */
+      }
+
+      .preset-separator {
+        width: 1px; height: 20px; background: rgba(255,255,255,0.12);
+        margin: 0 3px; flex-shrink: 0; align-self: center;
+      }
+      .color-preset {
+        width: 36px; height: 36px; border-radius: 9999px; cursor: pointer;
+        flex-shrink: 0; position: relative; background: transparent !important;
+        /* Stable hit area - visual is rendered via ::after */
+      }
+      .color-preset::after {
+        content: ''; position: absolute; inset: 4px; border-radius: 9999px;
+        background: var(--preset-color); border: 2px solid rgba(255,255,255,0.15);
+        box-shadow: var(--shadow-sm);
+        transition: transform var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+      }
+      .color-preset:hover::after { transform: scale(1.15); border-color: rgba(255,255,255,0.5); box-shadow: 0 0 8px rgba(255,255,255,0.2); }
+      .color-preset:active::after { transform: scale(0.92); }
+      .color-preset.active::after { box-shadow: 0 0 0 2px rgba(255,255,255,0.5); }
+      .color-preset.active:hover::after { box-shadow: 0 0 0 2px rgba(255,255,255,0.5), 0 0 8px rgba(255,255,255,0.2); }
+
+      .temp-preset {
+        width: 36px; height: 36px; border-radius: 9999px; cursor: pointer;
+        flex-shrink: 0; position: relative; background: transparent !important;
+      }
+      .temp-preset::after {
+        content: ''; position: absolute; inset: 4px; border-radius: 9999px;
+        background: var(--preset-color); border: 2px solid rgba(255,255,255,0.15);
+        box-shadow: var(--shadow-sm);
+        transition: transform var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+      }
+      .temp-preset:hover::after { transform: scale(1.15); border-color: rgba(255,255,255,0.5); box-shadow: 0 0 8px rgba(255,255,255,0.2); }
+      .temp-preset:active::after { transform: scale(0.92); }
+      .temp-preset.active::after { box-shadow: 0 0 0 2px rgba(255,255,255,0.5); }
+      .temp-preset.active:hover::after { box-shadow: 0 0 0 2px rgba(255,255,255,0.5), 0 0 8px rgba(255,255,255,0.2); }
+      .temp-preset .temp-label {
+        position: absolute; top: calc(100% + 2px); left: 50%; transform: translateX(-50%);
+        font-size: 9px; color: var(--text-tertiary); white-space: nowrap; pointer-events: none;
+        opacity: 0; transition: opacity var(--transition-fast);
+      }
+      .temp-preset:hover .temp-label { opacity: 1; }
+
+      .effect-preset {
+        width: 36px; height: 36px; border-radius: 9999px; cursor: pointer;
+        flex-shrink: 0; position: relative; background: transparent !important;
+        display: flex; align-items: center; justify-content: center;
+      }
+      .effect-preset::after {
+        content: ''; position: absolute; inset: 4px; border-radius: 9999px;
+        background: rgba(255,255,255,0.08); border: 2px solid rgba(255,255,255,0.15);
+        box-shadow: var(--shadow-sm);
+        transition: transform var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+      }
+      .effect-preset:hover::after { transform: scale(1.15); border-color: rgba(255,255,255,0.5); box-shadow: 0 0 8px rgba(255,255,255,0.2); }
+      .effect-preset:active::after { transform: scale(0.92); }
+      .effect-preset.active::after { box-shadow: 0 0 0 2px rgba(255,255,255,0.5); background: rgba(255,255,255,0.15); }
+      .effect-preset.active:hover::after { box-shadow: 0 0 0 2px rgba(255,255,255,0.5), 0 0 8px rgba(255,255,255,0.2); }
+      .effect-preset ha-icon {
+        position: relative; z-index: 1;
+        --mdc-icon-size: 18px; color: rgba(255,255,255,0.7);
+        pointer-events: none;
+      }
+      .effect-preset.active ha-icon { color: rgba(255,255,255,0.95); }
+      .effect-preset .effect-label {
+        position: absolute; top: calc(100% + 2px); left: 50%; transform: translateX(-50%);
+        font-size: 9px; color: var(--text-tertiary); white-space: nowrap; pointer-events: none;
+        opacity: 0; transition: opacity var(--transition-fast);
+      }
+      .effect-preset:hover .effect-label { opacity: 1; }
+
+      .slider-group { display:flex; flex-direction:column; gap:10px; min-width: 240px; grid-column: 2; grid-row: 1; }
+      .slider-row { display:flex; align-items:center; gap:8px; width:100%; padding: 2px 0; }
+
+      .slider {
+        flex:1; -webkit-appearance:none; appearance:none;
+        --slider-height: 24px;
+        --slider-thumb-size: 26px;
+        --slider-track-radius: 9999px;
+        --slider-percent: 50%;
+        --slider-ratio: 0.5;
+        --slider-fill: var(--accent-primary);
+        height: var(--slider-height);
+        border-radius: var(--slider-track-radius);
+        background:
+          linear-gradient(to right, var(--slider-fill) 0%, var(--slider-fill) 100%),
+          linear-gradient(to right, var(--surface-tertiary) 0%, var(--surface-tertiary) 100%);
+        background-size:
+          calc((100% - var(--slider-thumb-size)) * var(--slider-ratio) + (var(--slider-thumb-size) / 2)) 100%,
+          100% 100%;
+        background-repeat: no-repeat, no-repeat;
+        background-position: left center, left center;
+        outline:none; position:relative; cursor:pointer;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), inset 0 -1px 0 rgba(0,0,0,0.12), var(--shadow-sm);
+      }
+      .slider.temperature {
+        background:
+          linear-gradient(to right,
+            rgba(255,255,255,0.18) 0%,
+            rgba(255,255,255,0.18) 100%),
+          linear-gradient(to right,
+            #ff9944 0%,
+            #ffd480 30%,
+            #ffffff 50%,
+            #87ceeb 70%,
+            #4d9fff 100%),
+          linear-gradient(to right, var(--surface-tertiary) 0%, var(--surface-tertiary) 100%);
+        background-size:
+          calc((100% - var(--slider-thumb-size)) * var(--slider-ratio) + (var(--slider-thumb-size) / 2)) 100%,
+          100% 100%,
+          100% 100%;
+        background-repeat: no-repeat, no-repeat, no-repeat;
+        background-position: left center, left center, left center;
+      }
+      .slider::-webkit-slider-thumb {
+        -webkit-appearance:none; width:var(--slider-thumb-size); height:var(--slider-thumb-size); border-radius:9999px;
+        background: var(--text-primary); border:3px solid var(--surface-primary); box-shadow: 0 3px 10px rgba(0,0,0,0.35);
+        transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+        transform: scale(1.05);
+        margin-top: 0;
+      }
+      .slider::-webkit-slider-thumb:hover { transform: scale(1.05); box-shadow: 0 3px 10px rgba(0,0,0,0.35); }
+      .slider::-moz-range-thumb {
+        width:var(--slider-thumb-size); height:var(--slider-thumb-size); border-radius:9999px; background: var(--text-primary);
+        border:3px solid var(--surface-primary); box-shadow: 0 3px 10px rgba(0,0,0,0.35);
+        transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+        transform: scale(1.05);
+      }
+      .slider::-moz-range-thumb:hover { transform: scale(1.05); box-shadow: 0 3px 10px rgba(0,0,0,0.35); }
+      .slider::-moz-range-track {
+        height: 100%;
+        border-radius: var(--slider-track-radius);
+        background: var(--slider-track);
+        border: none;
+      }
+      .slider-value { font-size: 13px; color: var(--text-secondary); min-width: 56px; text-align:right; font-weight: 700; letter-spacing: 0.01em; align-self:center; }
+
+      .modal-overlay {
+        position: fixed; inset: 0; background: rgba(0,0,0,0.8); backdrop-filter: blur(8px);
+        display:none; align-items:center; justify-content:center; z-index:1000; padding:16px;
+      }
+      .modal-overlay.visible { display:flex; }
+      .modal {
+        background: var(--surface-secondary); border:1px solid var(--border-medium); border-radius:12px; padding:20px; max-width: 700px; width:100%; max-height: 80vh; overflow:auto; box-shadow: var(--shadow-md);
+      }
+      .modal-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+      .modal-title { font-size:18px; font-weight:600; color: var(--text-primary); letter-spacing: -0.01em; }
+      .modal-close {
+        width: 32px; height:32px; border:none; background:transparent; color: var(--text-tertiary);
+        border-radius:8px; cursor:pointer; font-size:24px; display:flex; align-items:center; justify-content:center;
+        transition: background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
+      }
+      .modal-close:hover { background: var(--surface-tertiary); color: var(--text-secondary); }
+      .modal-close:active { transform: scale(0.96); }
+      .yaml-output {
+        background: var(--surface-primary); border:1px solid var(--border-subtle); border-radius: 8px; padding: 12px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+        font-size: 12px; line-height: 1.6; color: var(--text-primary); white-space: pre; overflow-x: auto; user-select: all;
+      }
+      .modal-hint { margin-top: 8px; font-size:12px; color: var(--text-tertiary); text-align:center; }
+
+      @media (max-width: 768px) {
+        .controls-floating {
+          display: flex; flex-wrap: wrap; justify-content: center;
+          gap: 12px;
+          left: 16px; right: 16px; width: auto; transform: none;
+        }
+        .controls-below.visible {
+          display: flex; flex-wrap: wrap; justify-content: center;
+          gap: 12px;
+        }
+        .light { --light-size: ${Math.min(this._config.light_size, 50)}px; }
+        .color-wheel-mini { order: 1; flex-shrink: 0; align-self: start; }
+        .presets-area {
+          order: 2; flex: 0 1 auto; align-self: center;
+          margin-left: 0; /* Reset desktop alignment offset */
+          max-width: calc(100% - 140px); /* 128px wheel + 12px gap */
+          justify-content: center;
+        }
+        .slider-group { order: 3; flex: 1 1 100%; min-width: 0; }
+      }
+
+      .empty-state {
+        position: absolute; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 12px; pointer-events: none;
+      }
+      .empty-state-icon { color: var(--text-tertiary); opacity: 0.5; }
+      .empty-state-title { font-size: 16px; font-weight: 600; color: var(--text-secondary); }
+      .empty-state-text { font-size: 13px; color: var(--text-tertiary); text-align: center; max-width: 280px; line-height: 1.5; }
+
+      .modal-close:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+
+      /* Large color wheel overlay */
+      .color-wheel-overlay {
+        position: fixed; inset: 0; background: rgba(0,0,0,0.88); backdrop-filter: blur(12px);
+        display: none; flex-direction: column; align-items: center; justify-content: center;
+        z-index: 1000; padding: 24px; gap: 20px;
+      }
+      .color-wheel-overlay.visible { display: flex; }
+      .color-wheel-large-wrap {
+        position: relative; display: flex; align-items: center; justify-content: center;
+      }
+      .color-wheel-large {
+        width: min(75vmin, 380px); height: min(75vmin, 380px);
+        border-radius: 9999px; cursor: crosshair;
+        border: 3px solid rgba(255,255,255,0.15);
+        box-shadow: 0 0 60px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.05);
+        touch-action: none;
+      }
+      .color-wheel-footer {
+        display: flex; align-items: center; gap: 16px;
+      }
+      .color-wheel-preview-swatch {
+        width: 44px; height: 44px; border-radius: 9999px;
+        border: 2.5px solid rgba(255,255,255,0.25);
+        box-shadow: var(--shadow-md); transition: background-color 60ms ease, border-color 200ms ease;
+        background: var(--surface-tertiary);
+      }
+      .color-wheel-done-btn {
+        padding: 10px 32px; border: 1px solid rgba(255,255,255,0.12);
+        background: var(--surface-elevated); color: var(--text-primary);
+        font-size: 14px; font-weight: 600; font-family: var(--font-sans);
+        border-radius: var(--radius-lg); cursor: pointer;
+        transition: background var(--transition-fast), transform var(--transition-fast);
+      }
+      .color-wheel-done-btn:hover { background: var(--surface-tertiary); }
+      .color-wheel-done-btn:active { transform: scale(0.96); }
+      .color-wheel-hint {
+        font-size: 12px; color: var(--text-tertiary); text-align: center;
+        pointer-events: none; margin-top: -8px;
+      }
+      /* Magnifier loupe */
+      .color-wheel-magnifier {
+        position: fixed; width: 110px; height: 110px; border-radius: 9999px;
+        border: 3px solid #fff; box-shadow: 0 4px 24px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.1);
+        pointer-events: none; display: none; overflow: hidden; z-index: 1010;
+        transition: border-color 60ms ease;
+      }
+      .color-wheel-magnifier.visible { display: block; }
+      .color-wheel-magnifier canvas {
+        width: 100%; height: 100%; border-radius: 9999px; display: block;
+      }
+      .color-wheel-magnifier-crosshair {
+        position: absolute; inset: 0; pointer-events: none;
+      }
+
+      :host(.overlay-active) .light,
+      :host(.overlay-active) .light.selected,
+      :host(.overlay-active) .light.dragging,
+      :host(.overlay-active) .light-label {
+        z-index: 1;
+      }
+
+      /* User custom CSS */
+      ${(this._config.custom_css || '').replace(/<\/style/gi, '<\\/style')}
+    `;
+  }
+
+  _renderHeader() {
+    return `
+      <div class="header">
+        <div class="title">${this._escapeHtml(this._config.title)}</div>
+      </div>
+    `;
+  }
+
+  _resolveEntityColor(entity_id, isOn, attributes) {
+    const [domain] = entity_id.split('.');
+    const override = this._config.color_overrides?.[entity_id];
+
+    // Helper to extract override based on state
+    const getOverride = (state) => {
+      if (!override) return null;
+      if (typeof override === 'string') return state === 'on' ? override : null;
+      if (state === 'on') return override.state_on || override.on || null;
+      return override.state_off || override.off || null;
+    };
+
+    if (domain === 'scene') {
+      const ov = getOverride('on') || (typeof override === 'string' ? override : null);
+      return ov || this._config.scene_color;
+    }
+
+    if (isOn) {
+      const ov = getOverride('on');
+      if (ov) return ov;
+
+      if (domain === 'switch' || domain === 'input_boolean') return this._config.switch_on_color;
+      if (domain === 'binary_sensor') return this._config.binary_sensor_on_color;
+
+      if (attributes && attributes.rgb_color) {
+        const [r, g, b] = attributes.rgb_color;
+        return `rgb(${r}, ${g}, ${b})`;
+      }
+      return '#ffa500';
+    } else {
+      const ov = getOverride('off');
+      if (ov) return ov;
+
+      if (domain === 'switch' || domain === 'input_boolean') return this._config.switch_off_color;
+      if (domain === 'binary_sensor') return this._config.binary_sensor_off_color;
+      return 'transparent';
+    }
+  }
+
+  _renderEmptyState() {
+    return `
+      <div class="empty-state">
+        <div class="empty-state-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 18h6"/>
+            <path d="M10 22h4"/>
+            <path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/>
+          </svg>
+        </div>
+        <div class="empty-state-title">No entities configured</div>
+        <div class="empty-state-text">Edit this card to add light entities and start building your spatial layout.</div>
+      </div>
+    `;
+  }
+
+  _renderLightsHTML() {
+    return this._config.entities.map(entity_id => {
+      const pos = this._config.positions[entity_id] || { x: 50, y: 50 };
+      const st = this._hass?.states[entity_id];
+      if (!st) return '';
+
+      const [domain] = entity_id.split('.');
+      const isOn = st.state === 'on';
+      const isUnavailable = st.state === 'unavailable' || st.state === 'unknown';
+      const isSelected = this._selectedLights.has(entity_id);
+      const label = this._generateLabel(entity_id);
+
+      const color = this._resolveEntityColor(entity_id, isOn, st.attributes);
+
+      // Determine if this light should be icon-only
+      const isIconOnly = this._config.icon_only_overrides[entity_id] !== undefined
+        ? this._config.icon_only_overrides[entity_id]
+        : this._config.icon_only_mode;
+
+      // Minimal UI mode (no circles except when selected)
+      const isMinimalUI = this._config.minimal_ui;
+
+      // Icon-only or minimal-ui mode always shows icons; otherwise respect show_entity_icons
+      const iconData = (isIconOnly || isMinimalUI || this._config.show_entity_icons) ? this._getEntityIconData(entity_id) : null;
+      const stateClass = (domain === 'scene' || isOn) ? 'on' : 'off';
+      const iconOnlyClass = isMinimalUI ? 'minimal-ui' : (isIconOnly ? 'icon-only' : '');
+
+      // Build inline styles
+      let style = `left:${pos.x}%; top:${pos.y}%;`;
+
+      // Per-light size override
+      const lightSize = this._config.size_overrides[entity_id] || this._config.light_size;
+      if (lightSize !== this._config.light_size) {
+        style += `--light-size:${lightSize}px;`;
+      }
+
+      // Scale icon based on size
+      const iconScale = lightSize / 56; // 56 is the default size
+      if (iconScale !== 1) {
+        style += `--icon-scale:${iconScale.toFixed(2)};`;
+      }
+
+      // Icon rotation/mirror transform
+      const iconTransform = this._getIconTransform(entity_id);
+      if (iconTransform) {
+        style += `--icon-transform:${iconTransform};`;
+      }
+
+      // Set light color CSS variable for icon-only/minimal-ui modes
+      if ((isIconOnly || isMinimalUI) && color !== 'transparent') {
+        style += `--light-color:${color};`;
+      } else if (!isIconOnly && !isMinimalUI) {
+        if (color !== 'transparent') {
+          style += `background:${color};`;
+        } else {
+          // Omit background property entirely — let CSS gradient fallback handle it
+        }
+      }
+
+      // Add glow element when glow is enabled (works in all modes)
+      const entityGlow = this._getGlowConfig(entity_id);
+      const glowHtml = entityGlow.enabled
+        ? '<div class="light-glow"></div>'
+        : '';
+
+      // Halo element for icon-only / minimal-ui modes. Carries the colored
+      // glow via `background-color` + `filter: blur` instead of routing
+      // through `filter: drop-shadow(... var(--light-color) ...)` on the
+      // icon, which iOS clips to the icon's bounding rectangle and caches
+      // aggressively (the user-visible "rectangles restricting the
+      // shadows"). A sibling div has its own bounds and uses `var()` only
+      // in `background-color`, where mobile invalidates reliably.
+      const haloHtml = (isIconOnly || isMinimalUI)
+        ? '<div class="light-halo" aria-hidden="true"></div>'
+        : '';
+
+      // Apply per-entity style overrides
+      const styleOverride = this._config.style_overrides[entity_id];
+      if (styleOverride) {
+        style += styleOverride + (styleOverride.endsWith(';') ? '' : ';');
+      }
+
+      const friendly = st.attributes.friendly_name || entity_id;
+      const ariaLabel = isUnavailable ? `${friendly} (unavailable)` : friendly;
+      const unavailableBadge = isUnavailable
+        ? '<div class="light-status-badge" aria-hidden="true" title="Unavailable">?</div>'
+        : '';
+
+      return `
+        <div class="light ${stateClass} ${isSelected ? 'selected' : ''} ${iconOnlyClass}${isUnavailable ? ' unavailable' : ''}"
+             style="${style}"
+             data-entity="${entity_id}"
+             tabindex="0"
+             role="button"
+             aria-label="${this._escapeHtml(ariaLabel)}"
+             aria-pressed="${isSelected}"
+             aria-disabled="${isUnavailable ? 'true' : 'false'}">
+          ${haloHtml}
+          ${glowHtml}
+          ${iconData ? this._renderIcon(iconData) : ''}
+          <div class="light-label">${this._escapeHtml(label)}</div>
+          ${unavailableBadge}
+        </div>
+      `;
+    }).join('');
+  }
+
+  _renderCanvasElementsHTML() {
+    if (!this._config.canvas_elements || this._config.canvas_elements.length === 0) return '';
+    return this._config.canvas_elements.map(el => {
+      const pos = el.position;
+      let style = `left:${pos.x}%; top:${pos.y}%;`;
+      const cssVars = [];
+      if (el.style.color) cssVars.push(`--ce-color:${el.style.color}`);
+      if (el.style.font_size) cssVars.push(`--ce-font-size:${el.style.font_size}px`);
+      if (el.style.font_weight) cssVars.push(`--ce-font-weight:${el.style.font_weight}`);
+      if (el.style.opacity != null) style += `opacity:${el.style.opacity};`;
+      if (el.style.background) style += `background:${el.style.background};`;
+      if (el.style.border_radius) style += `border-radius:${el.style.border_radius};`;
+      if (el.style.letter_spacing) style += `letter-spacing:${el.style.letter_spacing};`;
+      if (el.style.text_shadow) cssVars.push(`--ce-text-shadow:${el.style.text_shadow}`);
+      style += cssVars.join(';') + (cssVars.length ? ';' : '');
+
+      if (el.type === 'link') {
+        return this._renderCanvasLink(el, style);
+      } else if (el.type === 'sensor') {
+        return this._renderCanvasSensor(el, style);
+      } else if (el.type === 'template') {
+        return this._renderCanvasTemplate(el, style);
+      }
+      return '';
+    }).join('');
+  }
+
+  _renderCanvasLink(el, style) {
+    const sizeStyle = `width:${el.size}px; height:${el.size}px;`;
+    const label = el.label ? `<div class="ce-label">${this._escapeHtml(el.label)}</div>` : '';
+    const bgClass = el.show_background === false ? ' no-background' : '';
+    return `
+      <div class="canvas-element canvas-element-link${bgClass}"
+           style="${style}"
+           data-element-id="${el.id}"
+           data-element-type="link"
+           role="button"
+           tabindex="0"
+           aria-label="${this._escapeHtml(el.label || 'Link')}">
+        <div class="ce-icon-wrap" style="${sizeStyle}">
+          <ha-icon icon="${this._escapeHtml(el.icon)}"></ha-icon>
+        </div>
+        ${label}
+      </div>
+    `;
+  }
+
+  _renderCanvasSensor(el, style) {
+    const st = this._hass?.states[el.entity];
+    const value = st ? st.state : '—';
+    const unit = el.suffix !== null ? el.suffix : (st?.attributes?.unit_of_measurement || '');
+    const displayValue = `${el.prefix}${value}${unit}`;
+    const icon = el.show_icon
+      ? `<ha-icon icon="${this._escapeHtml(el.icon || st?.attributes?.icon || 'mdi:eye')}"></ha-icon>`
+      : '';
+    const label = el.label
+      ? `<div class="ce-label">${this._escapeHtml(el.label)}</div>`
+      : (st?.attributes?.friendly_name
+        ? `<div class="ce-label">${this._escapeHtml(st.attributes.friendly_name)}</div>`
+        : '');
+    const bgClass = el.show_background === false ? ' no-background' : '';
+    return `
+      <div class="canvas-element canvas-element-sensor${bgClass}"
+           style="${style}"
+           data-element-id="${el.id}"
+           data-element-type="sensor"
+           data-entity="${el.entity || ''}"
+           role="button"
+           tabindex="0"
+           aria-label="${this._escapeHtml(el.label || st?.attributes?.friendly_name || el.entity || 'Sensor')}">
+        ${icon}
+        <span class="ce-value">${this._escapeHtml(displayValue)}</span>
+        ${label}
+      </div>
+    `;
+  }
+
+  _renderCanvasTemplate(el, style) {
+    const rendered = this._templateResults.get(el.id) || '';
+    const icon = el.icon ? `<ha-icon icon="${this._escapeHtml(el.icon)}"></ha-icon>` : '';
+    const label = el.label ? `<div class="ce-label">${this._escapeHtml(el.label)}</div>` : '';
+    return `
+      <div class="canvas-element canvas-element-template"
+           style="${style}"
+           data-element-id="${el.id}"
+           data-element-type="template"
+           role="status"
+           tabindex="0"
+           aria-label="${this._escapeHtml(el.label || 'Template')}">
+        ${icon}
+        <span class="ce-value">${this._escapeHtml(rendered)}</span>
+        ${label}
+      </div>
+    `;
+  }
+
+  _escapeHtml(text) {
+    if (!text) return '';
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  _renderControlsFloating(visible, controlContext) {
+    const { avgState, tempRange } = controlContext;
+    const clampedTemp = this._clampTemperature(avgState.temperature, tempRange);
+    const brightnessPercent = Math.min(100, Math.max(0, (avgState.brightness / 255) * 100));
+    const tempPercent = (tempRange.max > tempRange.min)
+      ? Math.min(100, Math.max(0, ((clampedTemp - tempRange.min) / (tempRange.max - tempRange.min)) * 100))
+      : 0;
+    const brightnessColor = Array.isArray(avgState.color) ? `rgb(${avgState.color.join(',')})` : 'var(--accent-primary)';
+    return `
+      <div class="controls-floating ${visible ? 'visible' : ''}" id="controlsFloating" role="region" aria-label="Light controls" aria-live="polite">
+        <canvas id="colorWheelMini" class="color-wheel-mini" width="256" height="256" role="img" aria-label="Color picker"></canvas>
+        <div class="slider-group">
+          <div class="slider-row">
+            <input type="range" class="slider" id="brightnessSlider" min="0" max="255" value="${avgState.brightness}" aria-label="Brightness" style="--slider-percent:${brightnessPercent}%;--slider-ratio:${brightnessPercent/100};--slider-fill:${brightnessColor};">
+            <span class="slider-value" id="brightnessValue">${Math.round((avgState.brightness/255)*100)}%</span>
+          </div>
+          <div class="slider-row">
+            <input type="range" class="slider temperature" id="temperatureSlider" min="${tempRange.min}" max="${tempRange.max}" value="${clampedTemp}" aria-label="Color temperature" style="--slider-percent:${tempPercent}%;--slider-ratio:${tempPercent/100};">
+            <span class="slider-value" id="temperatureValue">${clampedTemp}K</span>
+          </div>
+        </div>
+        <div class="presets-area">
+          ${this._renderPresetsContent()}
+        </div>
+      </div>
+    `;
+  }
+
+  _renderControlsBelow(controlContext) {
+    const { avgState, tempRange } = controlContext;
+    const clampedTemp = this._clampTemperature(avgState.temperature, tempRange);
+    const brightnessPercent = Math.min(100, Math.max(0, (avgState.brightness / 255) * 100));
+    const tempPercent = (tempRange.max > tempRange.min)
+      ? Math.min(100, Math.max(0, ((clampedTemp - tempRange.min) / (tempRange.max - tempRange.min)) * 100))
+      : 0;
+    const brightnessColor = Array.isArray(avgState.color) ? `rgb(${avgState.color.join(',')})` : 'var(--accent-primary)';
+    return `
+      <div class="controls-below ${(this._config.always_show_controls || this._selectedLights.size > 0 || this._config.default_entity) ? 'visible' : ''}" id="controlsBelow" role="region" aria-label="Light controls" aria-live="polite">
+        <canvas id="colorWheelMini" class="color-wheel-mini" width="256" height="256" role="img" aria-label="Color picker"></canvas>
+        <div class="slider-group">
+          <div class="slider-row">
+            <input type="range" class="slider" id="brightnessSlider" min="0" max="255" value="${avgState.brightness}" aria-label="Brightness" style="--slider-percent:${brightnessPercent}%;--slider-ratio:${brightnessPercent/100};--slider-fill:${brightnessColor};">
+            <span class="slider-value" id="brightnessValue">${Math.round((avgState.brightness/255)*100)}%</span>
+          </div>
+          <div class="slider-row">
+            <input type="range" class="slider temperature" id="temperatureSlider" min="${tempRange.min}" max="${tempRange.max}" value="${clampedTemp}" aria-label="Color temperature" style="--slider-percent:${tempPercent}%;--slider-ratio:${tempPercent/100};">
+            <span class="slider-value" id="temperatureValue">${clampedTemp}K</span>
+          </div>
+        </div>
+        <div class="presets-area">
+          ${this._renderPresetsContent()}
+        </div>
+      </div>
+    `;
+  }
+
+  _renderYamlModal() {
+    return `
+      <div class="modal-overlay ${this._yamlModalOpen ? 'visible' : ''}" id="yamlModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+        <div class="modal">
+          <div class="modal-header">
+            <span class="modal-title" id="modalTitle">Configuration YAML</span>
+            <button class="modal-close" id="closeModal" aria-label="Close">×</button>
+          </div>
+          <div class="yaml-output" id="yamlOutput" role="textbox" aria-multiline="true" aria-readonly="true"></div>
+          <div class="modal-hint">Select all (Cmd/Ctrl+A) and copy (Cmd/Ctrl+C)</div>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderLargeColorWheel() {
+    return `
+      <div class="color-wheel-overlay" id="colorWheelOverlay">
+        <div class="color-wheel-large-wrap">
+          <canvas class="color-wheel-large" id="colorWheelLarge" width="512" height="512"></canvas>
+        </div>
+        <div class="color-wheel-footer">
+          <div class="color-wheel-preview-swatch" id="colorWheelPreviewSwatch"></div>
+          <button class="color-wheel-done-btn" id="colorWheelDoneBtn">Done</button>
+        </div>
+        <div class="color-wheel-hint">Drag to pick a color</div>
+        <div class="color-wheel-magnifier" id="colorWheelMagnifier">
+          <canvas id="colorWheelMagnifierCanvas" width="220" height="220"></canvas>
+        </div>
+      </div>
+    `;
+  }
+
+  _updateControlValues(controlContext) {
+    const context = controlContext || { avgState: { brightness: 128, temperature: 4000 }, tempRange: { min: 2000, max: 6500 } };
+    const { avgState, tempRange } = context;
+    const brightness = Number.isFinite(avgState?.brightness) ? avgState.brightness : 128;
+    const temperature = Number.isFinite(avgState?.temperature)
+      ? this._clampTemperature(avgState.temperature, tempRange)
+      : this._clampTemperature(4000, tempRange);
+    const brightnessPercent = Math.min(100, Math.max(0, (brightness / 255) * 100));
+    const tempPercent = (tempRange.max > tempRange.min)
+      ? Math.min(100, Math.max(0, ((temperature - tempRange.min) / (tempRange.max - tempRange.min)) * 100))
+      : 0;
+    const brightnessColor = Array.isArray(avgState?.color) ? `rgb(${avgState.color.join(',')})` : 'var(--accent-primary)';
+
+    const brightnessActive = this._activeSliderGesture === 'brightness';
+    const temperatureActive = this._activeSliderGesture === 'temperature';
+
+    if (this._els.brightnessSlider) {
+      // Don't clobber the slider position while the user is actively dragging
+      // it — the gesture handler is the source of truth for both the thumb
+      // (`value`) and the fill (`--slider-percent` / `--slider-ratio`).
+      if (!brightnessActive) {
+        this._els.brightnessSlider.value = String(brightness);
+        this._els.brightnessSlider.style.setProperty('--slider-percent', `${brightnessPercent}%`);
+        this._els.brightnessSlider.style.setProperty('--slider-ratio', `${brightnessPercent / 100}`);
+      }
+      // Fill color (`--slider-fill`) reflects the averaged color of the
+      // selected lights; safe to update at any time since brightness changes
+      // don't change the color stops.
+      this._els.brightnessSlider.style.setProperty('--slider-fill', brightnessColor);
+    }
+    if (this._els.brightnessValue && !brightnessActive) {
+      this._els.brightnessValue.textContent = `${Math.round((brightness / 255) * 100)}%`;
+    }
+    if (this._els.temperatureSlider) {
+      if (this._els.temperatureSlider.min !== String(tempRange.min)) {
+        this._els.temperatureSlider.min = String(tempRange.min);
+      }
+      if (this._els.temperatureSlider.max !== String(tempRange.max)) {
+        this._els.temperatureSlider.max = String(tempRange.max);
+      }
+      if (!temperatureActive) {
+        this._els.temperatureSlider.value = String(temperature);
+        this._els.temperatureSlider.style.setProperty('--slider-percent', `${tempPercent}%`);
+        this._els.temperatureSlider.style.setProperty('--slider-ratio', `${tempPercent / 100}`);
+      }
+    }
+    if (this._els.temperatureValue && !temperatureActive) {
+      this._els.temperatureValue.textContent = `${temperature}K`;
+    }
+
+    // H7: capability gating — disable controls without a supported target.
+    // Layout space is preserved; only `disabled` attribute / `.disabled` class change.
+    const caps = this._getControlCapabilities(context.controlled || []);
+    if (this._els.brightnessSlider) {
+      this._els.brightnessSlider.disabled = !caps.brightness;
+    }
+    if (this._els.temperatureSlider) {
+      this._els.temperatureSlider.disabled = !caps.color_temp;
+    }
+    if (this._els.colorWheel) {
+      this._els.colorWheel.classList.toggle('disabled', !caps.rgb);
+    }
+    // Toggle classes on the controls container so preset rows can be dimmed.
+    const containers = [this._els.controlsFloating, this._els.controlsBelow].filter(Boolean);
+    containers.forEach(c => {
+      c.classList.toggle('no-rgb-support', !caps.rgb);
+      c.classList.toggle('no-temp-support', !caps.color_temp);
+      c.classList.toggle('no-brightness-support', !caps.brightness);
+    });
+  }
+
+  _updateSliderVisual(el) {
+    if (!el) return;
+    const min = parseFloat(el.min || '0');
+    const max = parseFloat(el.max || '100');
+    const val = parseFloat(el.value || '0');
+    const percent = Number.isFinite(min) && Number.isFinite(max) && max > min
+      ? Math.min(100, Math.max(0, ((val - min) / (max - min)) * 100))
+      : 0;
+    el.style.setProperty('--slider-percent', `${percent}%`);
+    el.style.setProperty('--slider-ratio', `${percent / 100}`);
+  }
+
+  _bindSliderGesture(el) {
+    if (!el) return;
+
+    const updateVisuals = () => {
+      this._updateSliderVisual(el);
+      // Manually update labels since programmatic changes don't fire input events
+      if (el.id === 'brightnessSlider' && this._els.brightnessValue) {
+        const pct = Math.round((parseInt(el.value, 10) / 255) * 100);
+        this._els.brightnessValue.textContent = `${pct}%`;
+      } else if (el.id === 'temperatureSlider' && this._els.temperatureValue) {
+        this._els.temperatureValue.textContent = `${el.value}K`;
+      }
+    };
+
+    const state = {
+      pointerId: null,
+      startX: 0,
+      startY: 0,
+      startValue: null,
+      isScrolling: false,
+      locked: false
+    };
+
+    const gestureKind = el.id === 'brightnessSlider' ? 'brightness'
+      : el.id === 'temperatureSlider' ? 'temperature'
+      : null;
+
+    el.addEventListener('pointerdown', (e) => {
+      // Prevent default browser dragging to ensure we handle the gesture
+      e.preventDefault();
+      el.setPointerCapture(e.pointerId);
+
+      state.pointerId = e.pointerId;
+      state.startX = e.clientX;
+      state.startY = e.clientY;
+      state.startValue = el.value;
+      state.isScrolling = false;
+      state.locked = false;
+      // Mark gesture active so `_updateControlValues` skips clobbering this
+      // slider while the user's finger is down.
+      if (gestureKind) this._activeSliderGesture = gestureKind;
+
+      // Immediate update on tap start
+      this._applyPointerValue(el, e.clientX);
+      updateVisuals();
+    });
+
+    el.addEventListener('pointermove', (e) => {
+      if (state.pointerId !== e.pointerId) return;
+      if (state.isScrolling) return;
+
+      const dx = Math.abs(e.clientX - state.startX);
+      const dy = Math.abs(e.clientY - state.startY);
+
+      // Check for scroll intent if not yet locked
+      if (!state.locked && (dx > 6 || dy > 6)) {
+        state.locked = true;
+        if (dy > dx) {
+          // Vertical scroll detected - Revert interaction
+          state.isScrolling = true;
+          el.value = state.startValue;
+          updateVisuals();
+          if (this._activeSliderGesture === gestureKind) this._activeSliderGesture = null;
+          try { el.releasePointerCapture(e.pointerId); } catch (_) { /* may not have capture */ }
+          return;
+        }
+      }
+
+      // If we aren't scrolling, follow the finger
+      this._applyPointerValue(el, e.clientX);
+      updateVisuals();
+    });
+
+    const endInteraction = (e) => {
+      if (state.pointerId !== e.pointerId) return;
+      try { el.releasePointerCapture(e.pointerId); } catch (_) { /* may not have capture */ }
+      state.pointerId = null;
+      if (this._activeSliderGesture === gestureKind) this._activeSliderGesture = null;
+
+      if (!state.isScrolling) {
+        // Commit change
+        if (el.id === 'brightnessSlider') {
+          this._pendingBrightness = parseInt(el.value, 10);
+          this._handleBrightnessChange();
+        } else if (el.id === 'temperatureSlider') {
+          this._pendingTemperature = parseInt(el.value, 10);
+          this._handleTemperatureChange();
+        }
+      }
+    };
+
+    el.addEventListener('pointerup', endInteraction);
+    el.addEventListener('pointercancel', endInteraction);
+  }
+
+  _applyPointerValue(el, clientX) {
+    const rect = el.getBoundingClientRect();
+    const min = parseFloat(el.min);
+    const max = parseFloat(el.max);
+
+    // The thumb size matches CSS --slider-thumb-size: 26px
+    const thumbSize = 26;
+
+    // Calculate the effective travel distance of the thumb's center
+    const availableWidth = rect.width - thumbSize;
+
+    // Offset relative to the start of the travel area
+    let offset = clientX - rect.left - (thumbSize / 2);
+
+    // In RTL layouts, the slider direction is reversed
+    const isRTL = getComputedStyle(el).direction === 'rtl';
+    if (isRTL) {
+      offset = availableWidth - offset;
+    }
+
+    let pct = 0;
+    if (availableWidth > 0) {
+      pct = offset / availableWidth;
+    }
+
+    pct = Math.max(0, Math.min(1, pct));
+    el.value = Math.round(min + pct * (max - min));
+  }
+
+  /** ---------- Events ---------- */
+  connectedCallback() {
+    if (!this._boundKeyDown) {
+      this._boundKeyDown = (e) => this._handleKeyDown(e);
+      document.addEventListener('keydown', this._boundKeyDown);
+    }
+    if (typeof window !== 'undefined') {
+      if (this._boundIconsetAdded) window.removeEventListener('iron-iconset-added', this._boundIconsetAdded);
+      this._boundIconsetAdded = () => this._refreshEntityIcons();
+      window.addEventListener('iron-iconset-added', this._boundIconsetAdded);
+      if (this._boundMoreInfo) window.removeEventListener('hass-more-info', this._boundMoreInfo);
+      this._boundMoreInfo = (event) => {
+        if (event.detail && 'entityId' in event.detail) {
+          this._moreInfoOpen = Boolean(event.detail.entityId);
+          this._syncOverlayState();
+        }
+      };
+      window.addEventListener('hass-more-info', this._boundMoreInfo, { passive: true });
+      // H11: cancel in-flight gestures when the tab is hidden or the window
+      // loses focus. Mobile browsers don't always emit `pointercancel` on
+      // backgrounding, leaving `_dragState` and timers stuck.
+      if (this._boundVisibilityChange) document.removeEventListener('visibilitychange', this._boundVisibilityChange);
+      this._boundVisibilityChange = () => {
+        if (document.hidden) {
+          this._cancelActiveInteractions();
+        } else {
+          // Tab just became visible. While hidden, browsers throttle rAF and
+          // the ha-icon iconset may have been buffering. Force a full refresh
+          // of the canvas-y bits and icons so nothing is left stale.
+          if (this._els.colorWheel) this._requestColorWheelDraw(true);
+          this._refreshEntityIcons();
+          this._updateAllGlows();
+        }
+      };
+      document.addEventListener('visibilitychange', this._boundVisibilityChange);
+      if (this._boundWindowBlur) window.removeEventListener('blur', this._boundWindowBlur);
+      this._boundWindowBlur = () => this._cancelActiveInteractions();
+      window.addEventListener('blur', this._boundWindowBlur);
+    }
+  }
+  disconnectedCallback() {
+    if (this._boundKeyDown) {
+      document.removeEventListener('keydown', this._boundKeyDown);
+      this._boundKeyDown = null;
+    }
+    if (this._raf) cancelAnimationFrame(this._raf);
+    if (this._boundIconsetAdded && typeof window !== 'undefined') {
+      window.removeEventListener('iron-iconset-added', this._boundIconsetAdded);
+      this._boundIconsetAdded = null;
+    }
+    if (this._boundMoreInfo && typeof window !== 'undefined') {
+      window.removeEventListener('hass-more-info', this._boundMoreInfo);
+      this._boundMoreInfo = null;
+    }
+    if (this._boundVisibilityChange) {
+      document.removeEventListener('visibilitychange', this._boundVisibilityChange);
+      this._boundVisibilityChange = null;
+    }
+    if (this._boundWindowBlur && typeof window !== 'undefined') {
+      window.removeEventListener('blur', this._boundWindowBlur);
+      this._boundWindowBlur = null;
+    }
+    if (this._longPressTimer) {
+      clearTimeout(this._longPressTimer);
+      this._longPressTimer = null;
+    }
+    if (this._iconRefreshHandle) {
+      clearTimeout(this._iconRefreshHandle);
+      this._iconRefreshHandle = null;
+    }
+    if (this._iconRehydrateHandle) {
+      clearTimeout(this._iconRehydrateHandle);
+      this._iconRehydrateHandle = null;
+    }
+    if (this._colorWheelObserver) {
+      this._colorWheelObserver.disconnect();
+      this._colorWheelObserver = null;
+    }
+    if (this._canvasObserver) {
+      this._canvasObserver.disconnect();
+      this._canvasObserver = null;
+    }
+    if (this._colorWheelFrame) {
+      const cancel = this._colorWheelCancel || (typeof cancelAnimationFrame === 'function' ? cancelAnimationFrame : clearTimeout);
+      cancel(this._colorWheelFrame);
+      this._colorWheelFrame = null;
+    }
+    this._pendingTap = null;
+    this._longPressTriggered = false;
+    this._moreInfoOpen = false;
+    this._largeColorWheelOpen = false;
+    if (this._colorWheelLongPressTimer) {
+      clearTimeout(this._colorWheelLongPressTimer);
+      this._colorWheelLongPressTimer = null;
+    }
+    this._colorWheelLongPressed = false;
+    this._largeWheelGesture = null;
+    this.classList.remove('overlay-active');
+
+    // Clean up canvas element state
+    this._unsubscribeTemplates();
+    this._pendingElementTap = null;
+    this._elementLongPressTriggered = false;
+    if (this._elementLongPressTimer) {
+      clearTimeout(this._elementLongPressTimer);
+      this._elementLongPressTimer = null;
+    }
+    if (this._elementTapTimeout) {
+      clearTimeout(this._elementTapTimeout);
+      this._elementTapTimeout = null;
+    }
+
+    if (this._zigbeeGroupsUnsub) {
+      try { this._zigbeeGroupsUnsub(); } catch (_) { /* ignore */ }
+      this._zigbeeGroupsUnsub = null;
+    }
+    if (this._zigbeeGroupsRefreshTimer) {
+      clearTimeout(this._zigbeeGroupsRefreshTimer);
+      this._zigbeeGroupsRefreshTimer = null;
+    }
+  }
+
+  _attachEventListeners() {
+    // Pointer events on canvas (unified)
+    if (this._els.canvas) {
+      this._els.canvas.addEventListener('pointerdown', (e) => this._onPointerDown(e));
+      this._els.canvas.addEventListener('pointermove', (e) => this._onPointerMove(e));
+      this._els.canvas.addEventListener('pointerup', (e) => this._onPointerUp(e));
+      this._els.canvas.addEventListener('pointercancel', (e) => this._onPointerCancel(e));
+      this._els.canvas.addEventListener('dblclick', (e) => this._handleCanvasDoubleClick(e));
+      this._els.canvas.addEventListener('contextmenu', (e) => this._handleCanvasContextMenu(e));
+      // Reposition labels when hovering over lights (delegated, deferred to next frame
+      // so :hover pseudo-class is fully applied before we check it)
+      this._els.canvas.addEventListener('pointerover', (e) => {
+        const light = e.target.closest('.light');
+        if (light && e.pointerType === 'mouse') {
+          requestAnimationFrame(() => this._repositionLabels());
+        }
+      });
+    }
+
+    // Modal close
+    const closeModal = this.shadowRoot.getElementById('closeModal');
+    if (closeModal) {
+      closeModal.addEventListener('click', () => {
+        this._yamlModalOpen = false;
+        if (this._els.yamlModal) this._els.yamlModal.classList.remove('visible');
+        this._syncOverlayState();
+      });
+    }
+    if (this._els.yamlModal) {
+      this._els.yamlModal.addEventListener('click', (e) => {
+        if (e.target === this._els.yamlModal) {
+          this._yamlModalOpen = false;
+          this._els.yamlModal.classList.remove('visible');
+          this._syncOverlayState();
+        }
+      });
+    }
+
+    // Controls events
+    if (this._els.colorWheel) {
+      this._els.colorWheel.addEventListener('pointerdown', (e) => {
+        const isTouchLike = e.pointerType === 'touch' || e.pointerType === 'pen' || !e.pointerType;
+        this._colorWheelActive = true;
+        this._colorWheelLongPressed = false;
+        this._colorWheelGesture = {
+          pointerId: e.pointerId,
+          isTouch: isTouchLike,
+          startScroll: this._getScrollPosition(),
+          scrolled: false,
+          pendingColor: null,
+          longPressActive: true,  // defer all color application while long-press might fire
+        };
+        e.preventDefault();
+        e.target.setPointerCapture?.(e.pointerId);
+
+        // Long-press detection for large color wheel
+        if (this._colorWheelLongPressTimer) clearTimeout(this._colorWheelLongPressTimer);
+        this._colorWheelLongPressStart = { x: e.clientX, y: e.clientY };
+        const longPressDelay = isTouchLike ? 400 : 600;
+        this._colorWheelLongPressTimer = setTimeout(() => {
+          this._colorWheelLongPressTimer = null;
+          this._colorWheelLongPressed = true;
+          this._colorWheelActive = false;
+          e.target.releasePointerCapture?.(e.pointerId);
+          if (navigator.vibrate) navigator.vibrate(30);
+          this._openLargeColorWheel();
+        }, longPressDelay);
+
+        // Always store as pending — never apply immediately during long-press window
+        const color = this._getColorWheelColorAtEvent(e);
+        if (color) this._colorWheelGesture.pendingColor = color;
+      });
+      this._els.colorWheel.addEventListener('pointermove', (e) => {
+        if (this._colorWheelActive) {
+          const gesture = this._colorWheelGesture;
+          if (!gesture || (gesture.pointerId !== undefined && gesture.pointerId !== e.pointerId)) return;
+
+          // Cancel long-press if finger/pointer moved too far
+          if (this._colorWheelLongPressTimer && this._colorWheelLongPressStart) {
+            const dx = e.clientX - this._colorWheelLongPressStart.x;
+            const dy = e.clientY - this._colorWheelLongPressStart.y;
+            if (Math.sqrt(dx * dx + dy * dy) > 8) {
+              clearTimeout(this._colorWheelLongPressTimer);
+              this._colorWheelLongPressTimer = null;
+              gesture.longPressActive = false;
+              // Now that long-press is cancelled, apply the deferred pending color (mouse only)
+              if (!gesture.isTouch && gesture.pendingColor) {
+                this._applyColorWheelSelection(gesture.pendingColor);
+              }
+            }
+          }
+
+          const scrollPos = this._getScrollPosition();
+          if (scrollPos.x !== gesture.startScroll.x || scrollPos.y !== gesture.startScroll.y) {
+            gesture.scrolled = true;
+            if (this._colorWheelLongPressTimer) { clearTimeout(this._colorWheelLongPressTimer); this._colorWheelLongPressTimer = null; }
+            return;
+          }
+
+          const color = this._getColorWheelColorAtEvent(e);
+          if (!color) return;
+
+          if (gesture.isTouch) {
+            gesture.pendingColor = color;
+          } else if (!gesture.longPressActive) {
+            // Only apply immediately for mouse after long-press window has passed
+            e.preventDefault();
+            this._applyColorWheelSelection(color);
+          } else {
+            gesture.pendingColor = color;
+          }
+        }
+      });
+      this._els.colorWheel.addEventListener('pointerup', (e) => {
+        // Cancel any pending long-press timer
+        if (this._colorWheelLongPressTimer) { clearTimeout(this._colorWheelLongPressTimer); this._colorWheelLongPressTimer = null; }
+
+        this._colorWheelActive = false;
+        e.target.releasePointerCapture?.(e.pointerId);
+
+        // If long press triggered, don't apply color from mini wheel
+        if (this._colorWheelLongPressed) {
+          this._colorWheelLongPressed = false;
+          this._colorWheelGesture = null;
+          return;
+        }
+
+        const gesture = this._colorWheelGesture;
+        this._colorWheelGesture = null;
+        if (!gesture || gesture.pointerId !== e.pointerId) return;
+
+        // Apply pending color on release (for both touch and mouse with deferred long-press)
+        if (!gesture.scrolled) {
+          const color = this._getColorWheelColorAtEvent(e) || gesture.pendingColor;
+          if (color) this._applyColorWheelSelection(color);
+        }
+      });
+      this._els.colorWheel.addEventListener('pointercancel', (e) => {
+        if (this._colorWheelLongPressTimer) { clearTimeout(this._colorWheelLongPressTimer); this._colorWheelLongPressTimer = null; }
+        this._colorWheelActive = false;
+        this._colorWheelLongPressed = false;
+        e.target.releasePointerCapture?.(e.pointerId);
+        this._colorWheelGesture = null;
+      });
+    }
+    // Preset click and highlight handlers (color + temperature)
+    this._bindPresetHandlers();
+    if (this._els.brightnessSlider) {
+      // Input/Change listeners kept for keyboard support but logic dominated by pointer events
+      this._els.brightnessSlider.addEventListener('input', (e) => this._handleBrightnessInput(e));
+      this._els.brightnessSlider.addEventListener('change', () => this._handleBrightnessChange());
+      this._bindSliderGesture(this._els.brightnessSlider);
+    }
+    if (this._els.temperatureSlider) {
+      this._els.temperatureSlider.addEventListener('input', (e) => this._handleTemperatureInput(e));
+      this._els.temperatureSlider.addEventListener('change', () => this._handleTemperatureChange());
+      this._bindSliderGesture(this._els.temperatureSlider);
+    }
+  }
+
+  _rerenderLightIconsOnly() {
+    const nodes = this.shadowRoot.querySelectorAll('.light');
+    nodes.forEach(light => {
+      const entity = light.dataset.entity;
+      const iconWrap = light.querySelector('.light-icon, ha-icon, ha-svg-icon, .light-icon-emoji');
+      if (iconWrap) iconWrap.remove();
+      if (this._config.show_entity_icons || this._config.icon_only_mode) {
+        const iconData = this._getEntityIconData(entity);
+        light.insertAdjacentHTML('afterbegin', this._renderIcon(iconData));
+      }
+    });
+    this._refreshEntityIcons();
+  }
+
+  _rerenderLightsForDisplayMode() {
+    // Re-render lights to apply icon-only mode changes
+    const nodes = this.shadowRoot.querySelectorAll('.light');
+    nodes.forEach(light => {
+      const entity_id = light.dataset.entity;
+      const st = this._hass?.states[entity_id];
+      if (!st) return;
+
+      const [domain] = entity_id.split('.');
+      const isOn = st.state === 'on';
+      const color = this._resolveEntityColor(entity_id, isOn, st.attributes);
+
+      // Determine if this light should be icon-only
+      const isIconOnly = this._config.icon_only_overrides[entity_id] !== undefined
+        ? this._config.icon_only_overrides[entity_id]
+        : this._config.icon_only_mode;
+
+      // Toggle icon-only class
+      light.classList.toggle('icon-only', isIconOnly);
+
+      // Update background/color styling
+      if (isIconOnly) {
+        light.style.background = 'transparent';
+        if (color !== 'transparent') {
+          light.style.setProperty('--light-color', color);
+        }
+      } else {
+        light.style.removeProperty('--light-color');
+        if (color !== 'transparent') {
+          light.style.background = color;
+        } else {
+          light.style.background = '';
+        }
+      }
+
+      // Ensure icons are present in icon-only mode
+      const iconWrap = light.querySelector('.light-icon, ha-icon, ha-svg-icon, .light-icon-emoji');
+      if (isIconOnly && !iconWrap) {
+        const iconData = this._getEntityIconData(entity_id);
+        light.insertAdjacentHTML('afterbegin', this._renderIcon(iconData));
+      } else if (!isIconOnly && !this._config.show_entity_icons && iconWrap) {
+        iconWrap.remove();
+      }
+    });
+    this._refreshEntityIcons();
+  }
+
+  _updateLightSizes() {
+    // Update all light sizes via CSS custom property
+    const nodes = this.shadowRoot.querySelectorAll('.light');
+    const defaultSize = this._config.light_size;
+    const defaultIconScale = defaultSize / 56;
+
+    nodes.forEach(light => {
+      const entity_id = light.dataset.entity;
+      const lightSize = this._config.size_overrides[entity_id] || defaultSize;
+      const iconScale = lightSize / 56;
+
+      // Apply size
+      light.style.setProperty('--light-size', `${lightSize}px`);
+      light.style.setProperty('--icon-scale', iconScale.toFixed(2));
+    });
+  }
+
+  _commitSelection(newSelection) {
+    const updatedSelection = new Set(newSelection);
+    this._selectedLights.clear();
+    updatedSelection.forEach(entity => this._selectedLights.add(entity));
+    this.updateLights();
+    const shouldDrawWheel =
+      (this._config.always_show_controls || this._selectedLights.size > 0 || this._config.default_entity) &&
+      Boolean(this._els.colorWheel);
+    if (shouldDrawWheel) {
+      this._requestColorWheelDraw();
+    }
+  }
+
+  /** ---------- Keyboard ---------- */
+  _handleKeyDown(e) {
+    // True if focus is inside this card's shadow DOM, or this card is itself
+    // the focused element. `composedPath()` walks across shadow boundaries —
+    // the previous `shadowRoot.contains(active)` check missed elements inside
+    // the shadow root because `document.activeElement` returns the host.
+    const path = (typeof e.composedPath === 'function') ? e.composedPath() : [];
+    const isOurCard = path.includes(this);
+    const active = document.activeElement;
+    const isEditable = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT' || active.isContentEditable);
+    if (isEditable && !isOurCard) return;
+
+    // Undo/Redo — only when card is focused (or has selection), to avoid
+    // hijacking these chords across the rest of the dashboard.
+    const cardEngaged = isOurCard || this._selectedLights.size > 0 || this._editPositionsMode || this._largeColorWheelOpen;
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+      if (!cardEngaged) return;
+      e.preventDefault();
+      this._undo();
+    }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'Z' && e.shiftKey))) {
+      if (!cardEngaged) return;
+      e.preventDefault();
+      this._redo();
+    }
+    // Escape → deselect and close panels
+    if (e.key === 'Escape') {
+      // Close large color wheel first if open
+      if (this._largeColorWheelOpen) {
+        this._closeLargeColorWheel();
+        return;
+      }
+      // Only intercept Escape if there's something for us to close/clear,
+      // otherwise let Escape behave normally for the rest of the dashboard.
+      if (!cardEngaged && this._selectedLights.size === 0 && !this._yamlModalOpen && !this._moreInfoOpen) return;
+      this._selectedLights.clear();
+      if (this._yamlModalOpen) this._yamlModalOpen = false;
+      if (this._els.yamlModal) this._els.yamlModal.classList.remove('visible');
+      if (this._moreInfoOpen) {
+        this.dispatchEvent(new CustomEvent('hass-more-info', {
+          detail: { entityId: null },
+          bubbles: true,
+          composed: true,
+        }));
+      }
+      this._moreInfoOpen = false;
+      this._syncOverlayState();
+      this.updateLights();
+    }
+    // Select all — only when card is engaged, otherwise leave Ctrl-A to the
+    // rest of the page (text selection, native form behavior, etc.).
+    if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+      if (!cardEngaged) return;
+      e.preventDefault();
+      this._selectedLights.clear();
+      this._config.entities.forEach(ent => this._selectedLights.add(ent));
+      this.updateLights();
+      if (this._els.colorWheel) this._requestColorWheelDraw();
+    }
+
+    // H18: Enter selects the focused light (toggles its membership in the
+    // selection — pressing Enter on a sequence of lights builds up a
+    // multi-selection, since keyboard navigation is inherently sequential and
+    // there's no equivalent of holding Shift while clicking each item).
+    // Space toggles the entity on/off ("press the button" convention). For
+    // non-light targets (presets, canvas elements) the distinction doesn't
+    // apply, so both keys activate.
+    const isEnter = e.key === 'Enter';
+    const isSpace = e.key === ' ' || e.key === 'Spacebar';
+    if (isEnter || isSpace) {
+      const target = path.find(n => n && n.classList && (
+        n.classList.contains('light') ||
+        n.classList.contains('color-preset') ||
+        n.classList.contains('temp-preset') ||
+        n.classList.contains('effect-preset') ||
+        n.classList.contains('canvas-element')
+      ));
+      if (!target) return;
+      e.preventDefault();
+      if (target.classList.contains('light')) {
+        const entity = target.dataset.entity;
+        if (!entity) return;
+        const [domain] = entity.split('.');
+        const toggleOnSingleTap = this._config.switch_single_tap && (domain === 'switch' || domain === 'input_boolean' || domain === 'scene');
+        if (toggleOnSingleTap) {
+          // Enter on a switch/scene/input_boolean with switch_single_tap:
+          // mirror tap and toggle just this entity.
+          this._toggleEntity(entity);
+        } else if (isSpace) {
+          // Space → group action. If there's any selection at all, drive the
+          // whole selection to a single on/off target (any-off → all on,
+          // all-on → all off). Otherwise act on the focused entity. The
+          // focused light doesn't need to be a member of the selection — the
+          // selection is the operand.
+          if (this._selectedLights.size > 0) {
+            this._toggleSelection([...this._selectedLights]);
+          } else {
+            this._toggleEntity(entity);
+          }
+        } else if (this._isSelectableEntity(entity)) {
+          // Enter → toggle this entity's membership in the selection.
+          const newSelection = new Set(this._selectedLights);
+          if (newSelection.has(entity)) newSelection.delete(entity);
+          else newSelection.add(entity);
+          this._commitSelection(newSelection);
+        }
+      } else if (target.classList.contains('color-preset')) {
+        const rgbAttr = target.dataset.presetRgb;
+        if (rgbAttr) {
+          const rgb = rgbAttr.split(',').map(Number);
+          if (rgb.length === 3 && rgb.every(Number.isFinite)) this._applyColorWheelSelection(rgb);
+        } else if (target.dataset.presetColor) {
+          const rgb = this._hexToRgb(target.dataset.presetColor);
+          if (rgb) this._applyColorWheelSelection(rgb);
+        }
+      } else if (target.classList.contains('temp-preset')) {
+        const k = parseInt(target.dataset.presetKelvin, 10);
+        if (Number.isFinite(k)) this._applyTemperaturePreset(k);
+      } else if (target.classList.contains('effect-preset')) {
+        const effect = target.dataset.presetEffect;
+        if (effect) this._applyEffectPreset(effect);
+      } else if (target.classList.contains('canvas-element')) {
+        const elementId = target.dataset.elementId;
+        const el = (this._config.canvas_elements || []).find(c => c.id === elementId);
+        if (el && el.tap_action) this._handleAction(el.tap_action, el);
+      }
+    }
+    // Optional: movement with arrows if unlocked
+    if ((!this._lockPositions || this._editPositionsMode) && this._selectedLights.size > 0) {
+      const step = e.altKey ? 1 : 0.5; // fine control with Alt
+      let moved = false;
+      const delta = { x: 0, y: 0 };
+      if (e.key === 'ArrowLeft') { delta.x = -step; moved = true; }
+      if (e.key === 'ArrowRight') { delta.x = step; moved = true; }
+      if (e.key === 'ArrowUp') { delta.y = -step; moved = true; }
+      if (e.key === 'ArrowDown') { delta.y = step; moved = true; }
+      if (moved) {
+        e.preventDefault();
+        this._selectedLights.forEach(entity => {
+          const pos = this._config.positions[entity] || { x: 50, y: 50 };
+          const nx = Math.max(0, Math.min(100, pos.x + delta.x));
+          const ny = Math.max(0, Math.min(100, pos.y + delta.y));
+          this._config.positions[entity] = { x: nx, y: ny };
+        });
+        this._smoothApplyPositions();
+        this._saveHistory();
+        if (this._editPositionsMode && this._editorId) {
+          window.dispatchEvent(new CustomEvent('spatial-card-positions-changed', {
+            detail: {
+              editorId: this._editorId,
+              positions: JSON.parse(JSON.stringify(this._config.positions)),
+            },
+          }));
+        }
+      }
+    }
+  }
+
+  /** ---------- Pointer (unified mouse/touch/pen) ---------- */
+  _onPointerDown(e) {
+    if (!this._els.canvas) return;
+    // Only respond to primary mouse button; touch/pen report button=0 as well.
+    // Right-click (2) and middle-click (1) should not start drags or long-press
+    // timers — `_handleCanvasContextMenu` handles right-click separately.
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.target.setPointerCapture?.(e.pointerId);
+
+    const targetLight = e.target.closest('.light');
+    if (targetLight) {
+      const entity = targetLight.dataset.entity;
+      const pointerType = e.pointerType || 'mouse';
+      const [domain] = entity.split('.');
+      // Check if this entity type is configured to toggle on single tap
+      const toggleOnSingleTap = this._config.switch_single_tap && (domain === 'switch' || domain === 'input_boolean' || domain === 'scene');
+      
+      if (this._lockPositions && !this._editPositionsMode) {
+        const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+        if (this._longPressTimer) {
+          clearTimeout(this._longPressTimer);
+          this._longPressTimer = null;
+        }
+        this._longPressTriggered = false;
+        const longPressDelay = pointerType === 'mouse' ? 650 : 500;
+        this._longPressTimer = setTimeout(() => {
+          this._longPressTimer = null;
+          this._longPressTriggered = true;
+          this._pendingTap = null;
+          this._lastTap = null;
+          if (pointerType !== 'mouse' && typeof navigator !== 'undefined' && navigator.vibrate) {
+            navigator.vibrate(30);
+          }
+          this._openMoreInfo(entity);
+        }, longPressDelay);
+        if (pointerType === 'touch' || pointerType === 'pen') {
+          this._pendingTap = {
+            entity,
+            pointerId: e.pointerId,
+            startX: e.clientX,
+            startY: e.clientY,
+            additive,
+            pointerType,
+            toggleOnSingleTap,
+          };
+        } else {
+          if (toggleOnSingleTap) {
+            const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+            const isRepeat = this._lastTap && this._lastTap.entity === entity && (now - this._lastTap.time) < 350;
+            if (!isRepeat) {
+              this._toggleEntity(entity);
+            }
+            this._lastTap = { entity, time: now };
+            return;
+          }
+          if (this._isSelectableEntity(entity)) {
+            const newSelection = new Set(this._selectedLights);
+            if (additive) {
+              if (newSelection.has(entity)) newSelection.delete(entity);
+              else newSelection.add(entity);
+            } else {
+              newSelection.clear();
+              newSelection.add(entity);
+            }
+            this._commitSelection(newSelection);
+          }
+        }
+        return;
+      }
+
+      if (!this._selectedLights.has(entity)) {
+        const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+        const newSelection = new Set(this._selectedLights);
+        if (!additive) newSelection.clear();
+        newSelection.add(entity);
+        this._commitSelection(newSelection);
+      }
+
+      this._pendingTap = null;
+      if (this._longPressTimer) {
+        clearTimeout(this._longPressTimer);
+        this._longPressTimer = null;
+      }
+      this._longPressTriggered = false;
+
+      // Begin drag
+      const rect = this._els.canvas.getBoundingClientRect();
+      this._dragState = {
+        entity,
+        startX: e.clientX,
+        startY: e.clientY,
+        initialLeft: parseFloat(targetLight.style.left),
+        initialTop: parseFloat(targetLight.style.top),
+        rect,
+        moved: false,
+      };
+      targetLight.classList.add('dragging');
+      // Pre-history snapshot if necessary
+      this._saveHistory();
+      return;
+    }
+
+    // Canvas element interaction (links, sensors, templates)
+    const targetElement = e.target.closest('.canvas-element');
+    if (targetElement) {
+      const elementId = targetElement.dataset.elementId;
+      const elConfig = this._config.canvas_elements?.find(el => el.id === elementId);
+      if (!elConfig) return;
+      const pointerType = e.pointerType || 'mouse';
+
+      // In edit mode, allow dragging canvas elements
+      if (this._editPositionsMode || !this._lockPositions) {
+        this._pendingElementTap = null;
+        if (this._elementLongPressTimer) { clearTimeout(this._elementLongPressTimer); this._elementLongPressTimer = null; }
+        this._elementLongPressTriggered = false;
+        const rect = this._els.canvas.getBoundingClientRect();
+        this._dragState = {
+          elementId,
+          isCanvasElement: true,
+          startX: e.clientX,
+          startY: e.clientY,
+          initialLeft: parseFloat(targetElement.style.left),
+          initialTop: parseFloat(targetElement.style.top),
+          rect,
+          moved: false,
+        };
+        targetElement.classList.add('dragging');
+        return;
+      }
+
+      // Normal mode: handle tap/hold/double-tap actions
+      if (this._elementLongPressTimer) {
+        clearTimeout(this._elementLongPressTimer);
+        this._elementLongPressTimer = null;
+      }
+      this._elementLongPressTriggered = false;
+
+      // Set up long press for hold_action
+      if (elConfig.hold_action && elConfig.hold_action.action !== 'none') {
+        const longPressDelay = pointerType === 'mouse' ? 650 : 500;
+        this._elementLongPressTimer = setTimeout(() => {
+          this._elementLongPressTimer = null;
+          this._elementLongPressTriggered = true;
+          this._pendingElementTap = null;
+          if (pointerType !== 'mouse' && typeof navigator !== 'undefined' && navigator.vibrate) {
+            navigator.vibrate(30);
+          }
+          this._handleAction(elConfig.hold_action, elConfig);
+        }, longPressDelay);
+      }
+
+      if (pointerType === 'touch' || pointerType === 'pen') {
+        this._pendingElementTap = {
+          elementId,
+          pointerId: e.pointerId,
+          startX: e.clientX,
+          startY: e.clientY,
+          pointerType,
+        };
+      } else {
+        // Mouse: handle tap immediately on pointerdown for responsiveness
+        // But defer to pointerup to allow long-press to take priority
+        this._pendingElementTap = {
+          elementId,
+          pointerId: e.pointerId,
+          startX: e.clientX,
+          startY: e.clientY,
+          pointerType,
+        };
+      }
+      return;
+    }
+
+    // Start canvas selection rubberband
+    if (e.target.id === 'canvas' || e.target.classList.contains('grid')) {
+      const rect = this._els.canvas.getBoundingClientRect();
+      this._selectionStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      this._selectionBox = document.createElement('div');
+      this._selectionBox.className = 'selection-box';
+      this._els.canvas.appendChild(this._selectionBox);
+      this._selectionModeAdditive = e.shiftKey || e.ctrlKey || e.metaKey;
+      this._selectionBase = this._selectionModeAdditive ? new Set(this._selectedLights) : null;
+      if (!this._selectionModeAdditive) {
+        this._selectedLights.clear();
+        this.updateLights();
+      }
+    }
+  }
+
+  _onPointerMove(e) {
+    if (this._pendingTap && e.pointerId === this._pendingTap.pointerId) {
+      const dx = e.clientX - this._pendingTap.startX;
+      const dy = e.clientY - this._pendingTap.startY;
+      if (Math.hypot(dx, dy) > 12) {
+        if (this._longPressTimer) {
+          clearTimeout(this._longPressTimer);
+          this._longPressTimer = null;
+        }
+        this._pendingTap = null;
+        this._lastTap = null;
+      }
+    }
+
+    // Cancel pending canvas element tap on movement
+    if (this._pendingElementTap && e.pointerId === this._pendingElementTap.pointerId) {
+      const dx = e.clientX - this._pendingElementTap.startX;
+      const dy = e.clientY - this._pendingElementTap.startY;
+      if (Math.hypot(dx, dy) > 12) {
+        if (this._elementLongPressTimer) {
+          clearTimeout(this._elementLongPressTimer);
+          this._elementLongPressTimer = null;
+        }
+        this._pendingElementTap = null;
+        this._lastElementTap = null;
+      }
+    }
+
+    if (this._dragState) {
+      e.preventDefault();
+      if (this._raf) cancelAnimationFrame(this._raf);
+      this._raf = requestAnimationFrame(() => {
+        this._raf = null;
+        if (!this._dragState) return;
+        const { rect, startX, startY, initialLeft, initialTop } = this._dragState;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) this._dragState.moved = true;
+
+        let xPercent = initialLeft + (dx / rect.width) * 100;
+        let yPercent = initialTop + (dy / rect.height) * 100;
+        const snapped = this._snapToGrid(xPercent, yPercent, e);
+        xPercent = Math.max(0, Math.min(100, snapped.x));
+        yPercent = Math.max(0, Math.min(100, snapped.y));
+
+        // Handle both light entity dragging and canvas element dragging
+        if (this._dragState.isCanvasElement) {
+          const node = this.shadowRoot.querySelector(`.canvas-element[data-element-id="${CSS.escape(this._dragState.elementId)}"]`);
+          if (node) {
+            node.style.left = `${xPercent}%`;
+            node.style.top = `${yPercent}%`;
+          }
+        } else {
+          const node = this.shadowRoot.querySelector(`.light[data-entity="${CSS.escape(this._dragState.entity)}"]`);
+          if (node) {
+            node.style.left = `${xPercent}%`;
+            node.style.top = `${yPercent}%`;
+          }
+        }
+      });
+      return;
+    }
+
+    if (this._selectionBox && this._selectionStart) {
+      e.preventDefault();
+      const rect = this._els.canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const left = Math.min(this._selectionStart.x, x);
+      const top = Math.min(this._selectionStart.y, y);
+      const width = Math.abs(x - this._selectionStart.x);
+      const height = Math.abs(y - this._selectionStart.y);
+      Object.assign(this._selectionBox.style, {
+        left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px`,
+      });
+      this._selectLightsInBox(left, top, width, height);
+    }
+  }
+
+  _onPointerUp(e) {
+    try { e.target.releasePointerCapture?.(e.pointerId); } catch (_) { /* may not have capture */ }
+    if (this._dragState) {
+      if (this._dragState.isCanvasElement) {
+        // Canvas element drag completion
+        const { elementId, moved } = this._dragState;
+        const node = this.shadowRoot.querySelector(`.canvas-element[data-element-id="${CSS.escape(elementId)}"]`);
+        if (node) {
+          node.classList.remove('dragging');
+          const finalLeft = parseFloat(node.style.left);
+          const finalTop = parseFloat(node.style.top);
+          // Update the canvas element position in config
+          const elConfig = this._config.canvas_elements?.find(el => el.id === elementId);
+          if (elConfig) {
+            elConfig.position = { x: finalLeft, y: finalTop };
+          }
+        }
+        if (moved) {
+          this._saveHistory();
+          if (this._editPositionsMode && this._editorId) {
+            window.dispatchEvent(new CustomEvent('spatial-card-positions-changed', {
+              detail: {
+                editorId: this._editorId,
+                positions: JSON.parse(JSON.stringify(this._config.positions)),
+                canvas_elements: JSON.parse(JSON.stringify(this._config.canvas_elements)),
+              },
+            }));
+          }
+        }
+      } else {
+        // Light entity drag completion
+        const { entity, moved } = this._dragState;
+        const node = this.shadowRoot.querySelector(`.light[data-entity="${CSS.escape(entity)}"]`);
+        if (node) {
+          node.classList.remove('dragging');
+          const finalLeft = parseFloat(node.style.left);
+          const finalTop = parseFloat(node.style.top);
+          this._config.positions[entity] = { x: finalLeft, y: finalTop };
+        }
+        if (moved) {
+          this._saveHistory();
+          // Notify editor of position changes when in edit mode
+          if (this._editPositionsMode && this._editorId) {
+            window.dispatchEvent(new CustomEvent('spatial-card-positions-changed', {
+              detail: {
+                editorId: this._editorId,
+                positions: JSON.parse(JSON.stringify(this._config.positions)),
+              },
+            }));
+          }
+        }
+      }
+      this._dragState = null;
+    }
+
+    if (this._selectionBox) {
+      this._selectionBox.remove();
+      this._selectionBox = null;
+      this._selectionStart = null;
+      this._selectionBase = null;
+      this._selectionModeAdditive = false;
+    }
+
+    if (this._longPressTimer) {
+      clearTimeout(this._longPressTimer);
+      this._longPressTimer = null;
+    }
+
+    if (this._pendingTap && e.pointerId === this._pendingTap.pointerId) {
+      if (!this._longPressTriggered) {
+        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        const isTouch = this._pendingTap.pointerType === 'touch' || this._pendingTap.pointerType === 'pen';
+        if (this._pendingTap.toggleOnSingleTap) {
+          const isRepeat = this._lastTap && this._lastTap.entity === this._pendingTap.entity && (now - this._lastTap.time) < 350;
+          if (!isRepeat) {
+            this._toggleEntity(this._pendingTap.entity);
+          }
+          this._lastTap = { entity: this._pendingTap.entity, time: now };
+        } else if (isTouch && this._lastTap && this._lastTap.entity === this._pendingTap.entity && (now - this._lastTap.time) < 350) {
+          this._toggleEntity(this._pendingTap.entity);
+          this._lastTap = null;
+        } else {
+          if (isTouch) {
+            this._lastTap = { entity: this._pendingTap.entity, time: now };
+          } else {
+            this._lastTap = null;
+          }
+          if (this._isSelectableEntity(this._pendingTap.entity)) {
+            const newSelection = this._pendingTap.additive
+              ? new Set(this._selectedLights)
+              : new Set();
+            if (this._pendingTap.additive && newSelection.has(this._pendingTap.entity)) {
+              newSelection.delete(this._pendingTap.entity);
+            } else {
+              newSelection.add(this._pendingTap.entity);
+            }
+            this._commitSelection(newSelection);
+          }
+        }
+      }
+      this._pendingTap = null;
+    }
+
+    this._longPressTriggered = false;
+
+    // Handle canvas element tap
+    if (this._elementLongPressTimer) {
+      clearTimeout(this._elementLongPressTimer);
+      this._elementLongPressTimer = null;
+    }
+    if (this._pendingElementTap && e.pointerId === this._pendingElementTap.pointerId) {
+      if (!this._elementLongPressTriggered) {
+        const elementId = this._pendingElementTap.elementId;
+        const elConfig = this._config.canvas_elements?.find(el => el.id === elementId);
+        if (elConfig) {
+          const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+          const isDoubleTap = this._lastElementTap
+            && this._lastElementTap.elementId === elementId
+            && (now - this._lastElementTap.time) < 350;
+          if (isDoubleTap && elConfig.double_tap_action && elConfig.double_tap_action.action !== 'none') {
+            this._handleAction(elConfig.double_tap_action, elConfig);
+            this._lastElementTap = null;
+          } else {
+            this._lastElementTap = { elementId, time: now };
+            if (elConfig.tap_action && elConfig.tap_action.action !== 'none') {
+              // For touch, defer tap to allow double-tap detection
+              const isTouch = this._pendingElementTap.pointerType === 'touch' || this._pendingElementTap.pointerType === 'pen';
+              if (isTouch && elConfig.double_tap_action && elConfig.double_tap_action.action !== 'none') {
+                const tapConfig = elConfig;
+                this._elementTapTimeout = setTimeout(() => {
+                  // Only fire if no double-tap happened
+                  if (this._lastElementTap && this._lastElementTap.elementId === elementId) {
+                    this._handleAction(tapConfig.tap_action, tapConfig);
+                    this._lastElementTap = null;
+                  }
+                }, 350);
+              } else {
+                this._handleAction(elConfig.tap_action, elConfig);
+              }
+            }
+          }
+        }
+      }
+      this._pendingElementTap = null;
+    }
+    this._elementLongPressTriggered = false;
+  }
+
+  _onPointerCancel() {
+    this._cancelActiveInteractions();
+  }
+
+  _handleCanvasDoubleClick(e) {
+    // Canvas elements handle double-tap via _onPointerUp; prevent default dblclick
+    const targetElement = e.target.closest('.canvas-element');
+    if (targetElement) {
+      e.preventDefault();
+      return;
+    }
+
+    const targetLight = e.target.closest('.light');
+    if (!targetLight) return;
+    const entity = targetLight.dataset.entity;
+    if (!entity) return;
+    const [domain] = entity.split('.');
+    if (this._config.switch_single_tap && (domain === 'switch' || domain === 'input_boolean' || domain === 'scene')) {
+      return;
+    }
+    e.preventDefault();
+    this._toggleEntity(entity);
+    this._lastTap = null;
+  }
+
+  _handleCanvasContextMenu(e) {
+    // Canvas elements: prevent default context menu
+    const targetElement = e.target.closest('.canvas-element');
+    if (targetElement) {
+      e.preventDefault();
+      return;
+    }
+
+    const targetLight = e.target.closest('.light');
+    if (!targetLight) return;
+    const entity = targetLight.dataset.entity;
+    if (!entity) return;
+    e.preventDefault();
+    // Cancel any long-press timer started by the matching pointerdown so the
+    // long-press doesn't double-fire `_openMoreInfo` ~500ms after the contextmenu.
+    if (this._longPressTimer) {
+      clearTimeout(this._longPressTimer);
+      this._longPressTimer = null;
+    }
+    this._longPressTriggered = false;
+    this._pendingTap = null;
+    this._openMoreInfo(entity);
+    this._lastTap = null;
+  }
+
+  _cancelActiveInteractions() {
+    this._dragState = null;
+    if (this.shadowRoot) {
+      this.shadowRoot.querySelectorAll('.light.dragging').forEach(node => node.classList.remove('dragging'));
+      this.shadowRoot.querySelectorAll('.canvas-element.dragging').forEach(node => node.classList.remove('dragging'));
+    }
+    // Clear canvas element interaction state
+    if (this._elementLongPressTimer) {
+      clearTimeout(this._elementLongPressTimer);
+      this._elementLongPressTimer = null;
+    }
+    this._pendingElementTap = null;
+    this._elementLongPressTriggered = false;
+    if (this._elementTapTimeout) {
+      clearTimeout(this._elementTapTimeout);
+      this._elementTapTimeout = null;
+    }
+    if (this._selectionBox) {
+      this._selectionBox.remove();
+      this._selectionBox = null;
+    }
+    this._selectionStart = null;
+    this._selectionBase = null;
+    this._selectionModeAdditive = false;
+    if (this._longPressTimer) {
+      clearTimeout(this._longPressTimer);
+      this._longPressTimer = null;
+    }
+    this._pendingTap = null;
+    this._longPressTriggered = false;
+    // Color-wheel gesture state
+    if (this._colorWheelLongPressTimer) {
+      clearTimeout(this._colorWheelLongPressTimer);
+      this._colorWheelLongPressTimer = null;
+    }
+    this._colorWheelLongPressed = false;
+    this._colorWheelLongPressStart = null;
+    this._colorWheelGesture = null;
+    this._colorWheelActive = false;
+    // H12: commit any pending slider value so end-of-gesture survives DOM rebuild.
+    this._activeSliderGesture = null;
+    if (this._pendingBrightness != null) this._handleBrightnessChange();
+    if (this._pendingTemperature != null) this._handleTemperatureChange();
+  }
+
+  _selectLightsInBox(left, top, width, height) {
+    const lights = this.shadowRoot.querySelectorAll('.light');
+    const rect = this._els.canvas.getBoundingClientRect();
+    const inside = new Set();
+    lights.forEach(light => {
+      const r = light.getBoundingClientRect();
+      const cx = r.left - rect.left + r.width / 2;
+      const cy = r.top - rect.top + r.height / 2;
+      if (cx >= left && cx <= left + width && cy >= top && cy <= top + height) {
+        if (this._isSelectableEntity(light.dataset.entity)) {
+          inside.add(light.dataset.entity);
+        }
+      }
+    });
+    if (this._selectionModeAdditive && this._selectionBase) {
+      this._commitSelection(new Set([...this._selectionBase, ...inside]));
+    } else {
+      this._commitSelection(inside);
+    }
+  }
+
+  _syncOverlayState() {
+    const overlayActive = this._yamlModalOpen || this._moreInfoOpen || this._largeColorWheelOpen;
+    this.classList.toggle('overlay-active', overlayActive);
+  }
+
+  /** ---------- Color control ---------- */
+  _getScrollPosition() {
+    if (typeof window === 'undefined') return { x: 0, y: 0 };
+    const x = typeof window.scrollX === 'number' ? window.scrollX : window.pageXOffset || 0;
+    const y = typeof window.scrollY === 'number' ? window.scrollY : window.pageYOffset || 0;
+    return { x, y };
+  }
+
+  _getColorWheelColorAtEvent(e) {
+    const canvas = this._els.colorWheel;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const y = (e.clientY - rect.top) * (canvas.height / rect.height);
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    // Clamp to canvas bounds — Firefox throws IndexSizeError when sx === width.
+    const px = Math.max(0, Math.min(canvas.width - 1, Math.floor(x)));
+    const py = Math.max(0, Math.min(canvas.height - 1, Math.floor(y)));
+    let imageData;
+    try { imageData = ctx.getImageData(px, py, 1, 1); }
+    catch (_) { return null; }
+    const [r, g, b, a] = imageData.data;
+    if (a === 0) return null; // click outside painted area
+    return [r, g, b];
+  }
+
+  _hexToRgb(hex) {
+    if (!hex) return null;
+    const h = hex.replace('#', '');
+    if (h.length === 3) {
+      return [parseInt(h[0] + h[0], 16), parseInt(h[1] + h[1], 16), parseInt(h[2] + h[2], 16)];
+    }
+    if (h.length === 6) {
+      return [parseInt(h.substring(0, 2), 16), parseInt(h.substring(2, 4), 16), parseInt(h.substring(4, 6), 16)];
+    }
+    return null;
+  }
+
+  _rgbDistance(a, b) {
+    const dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2];
+    return Math.sqrt(dr * dr + dg * dg + db * db);
+  }
+
+  _getLiveColors() {
+    const COLOR_TOLERANCE = SpatialLightColorCard.COLOR_TOLERANCE;
+    const colors = [];
+    const rgbModes = SpatialLightColorCard.RGB_COLOR_MODES;
+
+    this._config.entities.forEach(id => {
+      const st = this._hass?.states?.[id];
+      if (!st || st.state !== 'on') return;
+      if (!Array.isArray(st.attributes.rgb_color)) return;
+
+      // Skip lights in temperature mode - their rgb_color is just the temp rendered as RGB
+      const colorMode = st.attributes.color_mode;
+      if (colorMode && !rgbModes.has(colorMode)) return;
+
+      const rgb = [st.attributes.rgb_color[0], st.attributes.rgb_color[1], st.attributes.rgb_color[2]];
+
+      // Deduplicate with tolerance against already-collected colors
+      const isDupe = colors.some(c => this._rgbDistance(c.rgb, rgb) < COLOR_TOLERANCE);
+      if (!isDupe) {
+        const hex = '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
+        colors.push({ hex, rgb, entities: [id] });
+      } else {
+        // Add entity to the matching color's list
+        const match = colors.find(c => this._rgbDistance(c.rgb, rgb) < COLOR_TOLERANCE);
+        if (match) match.entities.push(id);
+      }
+    });
+    return colors;
+  }
+
+  _getLiveTemperatures() {
+    const TEMP_TOLERANCE = SpatialLightColorCard.TEMP_TOLERANCE;
+    const temps = [];
+    this._config.entities.forEach(id => {
+      const st = this._hass?.states?.[id];
+      if (!st || st.state !== 'on') return;
+      const colorMode = st.attributes.color_mode;
+      // Only include lights actually in temperature mode
+      if (colorMode !== 'color_temp') return;
+      const kelvin = st.attributes.color_temp_kelvin != null
+        ? Math.round(Number(st.attributes.color_temp_kelvin))
+        : (st.attributes.color_temp != null ? Math.round(1000000 / st.attributes.color_temp) : NaN);
+      if (!Number.isFinite(kelvin)) return;
+
+      const isDupe = temps.some(t => Math.abs(t.kelvin - kelvin) < TEMP_TOLERANCE);
+      if (!isDupe) {
+        temps.push({ kelvin, entities: [id] });
+      } else {
+        const match = temps.find(t => Math.abs(t.kelvin - kelvin) < TEMP_TOLERANCE);
+        if (match) match.entities.push(id);
+      }
+    });
+    return temps;
+  }
+
+  _replaceOrInsert(parent, selector, html, insertPosition = 'beforeend') {
+    const existing = parent.querySelector(selector);
+    if (html) {
+      const temp = document.createElement('div');
+      temp.innerHTML = html;
+      const newEl = temp.firstElementChild;
+      if (existing) {
+        parent.replaceChild(newEl, existing);
+      } else {
+        parent.insertAdjacentHTML(insertPosition, html);
+      }
+    } else if (existing) {
+      existing.remove();
+    }
+  }
+
+  _refreshColorPresets() {
+    if (!this.shadowRoot) return;
+
+    const combinedHtml = this._renderPresetsContent();
+
+    // Only replace DOM when content actually changed (prevents hover blink from DOM churn)
+    if (combinedHtml !== this._lastPresetsHtml) {
+      this._lastPresetsHtml = combinedHtml;
+      const presetsAreas = this.shadowRoot.querySelectorAll('.presets-area');
+      presetsAreas.forEach(area => { area.innerHTML = combinedHtml; });
+      this._bindPresetHandlers();
+      this._refreshEffectPresetIcons();
+      requestAnimationFrame(() => this._updateSeparatorVisibility());
+    }
+  }
+
+  _refreshEffectPresetIcons() {
+    if (!this.shadowRoot || !this._hass) return;
+    this.shadowRoot.querySelectorAll('.effect-preset ha-icon').forEach(iconEl => {
+      if (iconEl.hass !== this._hass) iconEl.hass = this._hass;
+    });
+  }
+
+  _highlightEntities(entityList) {
+    if (!this.shadowRoot) return;
+    this.shadowRoot.querySelectorAll('.light.preset-highlight').forEach(l => l.classList.remove('preset-highlight'));
+    if (!entityList) return;
+    const entities = typeof entityList === 'string' ? entityList.split(',') : entityList;
+    entities.forEach(id => {
+      const el = this.shadowRoot.querySelector(`.light[data-entity="${CSS.escape(id)}"]`);
+      if (el) el.classList.add('preset-highlight');
+    });
+  }
+
+  _bindPresetHighlight(el) {
+    const entities = el.dataset.presetEntities;
+    if (!entities) return;
+
+    // Desktop: hover (use pointer events with pointerType check to avoid
+    // synthetic mouse events fired by mobile browsers after touch taps)
+    el.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') this._highlightEntities(entities); });
+    el.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') this._highlightEntities(null); });
+
+    // Mobile: long-press (300ms) to highlight, release to clear
+    // Uses document-level listeners so highlight clears even if DOM is replaced mid-touch
+    let holdTimer = null;
+    let clearHighlight = null;
+    el.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse') return; // handled by pointerenter
+      // Clean up any leftover listeners from a prior interaction
+      if (clearHighlight) {
+        document.removeEventListener('pointerup', clearHighlight);
+        document.removeEventListener('pointercancel', clearHighlight);
+      }
+      holdTimer = setTimeout(() => {
+        holdTimer = null;
+        this._highlightEntities(entities);
+        if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(15);
+      }, 300);
+      clearHighlight = () => {
+        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+        this._highlightEntities(null);
+        document.removeEventListener('pointerup', clearHighlight);
+        document.removeEventListener('pointercancel', clearHighlight);
+        clearHighlight = null;
+      };
+      document.addEventListener('pointerup', clearHighlight);
+      document.addEventListener('pointercancel', clearHighlight);
+    });
+  }
+
+  _bindPresetHandlers() {
+    if (!this.shadowRoot) return;
+    this.shadowRoot.querySelectorAll('.color-preset').forEach(el => {
+      if (el._presetBound) return;
+      el._presetBound = true;
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const rgbAttr = el.dataset.presetRgb;
+        let rgb;
+        if (rgbAttr) {
+          rgb = rgbAttr.split(',').map(Number);
+        } else {
+          rgb = this._hexToRgb(el.dataset.presetColor);
+        }
+        if (rgb) this._applyColorWheelSelection(rgb);
+      });
+      this._bindPresetHighlight(el);
+    });
+    this.shadowRoot.querySelectorAll('.temp-preset').forEach(el => {
+      if (el._presetBound) return;
+      el._presetBound = true;
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const kelvin = parseInt(el.dataset.presetKelvin, 10);
+        if (Number.isFinite(kelvin)) this._applyTemperaturePreset(kelvin);
+      });
+      this._bindPresetHighlight(el);
+    });
+    this.shadowRoot.querySelectorAll('.effect-preset').forEach(el => {
+      if (el._presetBound) return;
+      el._presetBound = true;
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const effectName = el.dataset.presetEffect;
+        if (effectName) this._applyEffectPreset(effectName);
+      });
+      this._bindPresetHighlight(el);
+    });
+  }
+
+  _getActivePresetColor() {
+    const controlled = this._getControlledEntities();
+    if (controlled.length === 0) return null;
+
+    const rgbModes = new Set(['hs', 'rgb', 'xy', 'rgbw', 'rgbww']);
+    // When nothing selected, check ALL entities for unanimity; when selected, check only selected
+    const entitiesToCheck = this._selectedLights.size > 0
+      ? controlled
+      : this._config.entities;
+
+    let referenceRgb = null;
+    let anyRgbOn = false;
+
+    for (const id of entitiesToCheck) {
+      const st = this._hass?.states?.[id];
+      if (!st || st.state !== 'on') continue;
+      const colorMode = st.attributes.color_mode;
+      if (colorMode && !rgbModes.has(colorMode)) continue;
+      if (!Array.isArray(st.attributes.rgb_color)) continue;
+      anyRgbOn = true;
+      const rgb = st.attributes.rgb_color;
+      if (!referenceRgb) {
+        referenceRgb = rgb;
+      } else if (this._rgbDistance(referenceRgb, rgb) >= SpatialLightColorCard.COLOR_TOLERANCE) {
+        return null;
+      }
+    }
+    if (!anyRgbOn || !referenceRgb) return null;
+    return referenceRgb;
+  }
+
+  _getActivePresetTemp() {
+    const controlled = this._getControlledEntities();
+    if (controlled.length === 0) return null;
+
+    const entitiesToCheck = this._selectedLights.size > 0
+      ? controlled
+      : this._config.entities;
+
+    let referenceKelvin = null;
+    let anyTempOn = false;
+
+    for (const id of entitiesToCheck) {
+      const st = this._hass?.states?.[id];
+      if (!st || st.state !== 'on') continue;
+      if (st.attributes.color_mode !== 'color_temp') continue;
+      const kelvin = st.attributes.color_temp_kelvin != null
+        ? Math.round(Number(st.attributes.color_temp_kelvin))
+        : (st.attributes.color_temp != null ? Math.round(1000000 / st.attributes.color_temp) : NaN);
+      if (!Number.isFinite(kelvin)) continue;
+      anyTempOn = true;
+      if (referenceKelvin === null) {
+        referenceKelvin = kelvin;
+      } else if (Math.abs(referenceKelvin - kelvin) >= SpatialLightColorCard.TEMP_TOLERANCE) {
+        return null;
+      }
+    }
+    if (!anyTempOn || referenceKelvin === null) return null;
+    return referenceKelvin;
+  }
+
+  _renderColorPresets() {
+    const configPresets = this._config.color_presets || [];
+    const showLive = !!this._config.show_live_colors;
+
+    // Always fetch live colors for entity matching (config presets need it too for highlight)
+    const allLiveColors = this._getLiveColors();
+
+    // Deduplicate live colors against config presets using RGB distance tolerance
+    const TOL = SpatialLightColorCard.COLOR_TOLERANCE;
+    const configRgbs = configPresets.map(c => this._hexToRgb(c)).filter(Boolean);
+    const filteredLive = showLive
+      ? allLiveColors.filter(lc => !configRgbs.some(cr => this._rgbDistance(cr, lc.rgb) < TOL))
+      : [];
+
+    if (configPresets.length === 0 && filteredLive.length === 0) return '';
+
+    const isValidColor = (c) => /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(c);
+    const activeRgb = this._getActivePresetColor();
+
+    let html = '';
+    configPresets.forEach(color => {
+      if (!isValidColor(color)) return;
+      const rgb = this._hexToRgb(color);
+      const matchingEntities = rgb ? allLiveColors
+        .filter(lc => this._rgbDistance(lc.rgb, rgb) < TOL)
+        .flatMap(lc => lc.entities) : [];
+      const entitiesAttr = matchingEntities.length ? ` data-preset-entities="${matchingEntities.join(',')}"` : '';
+      const isActive = activeRgb && rgb && this._rgbDistance(rgb, activeRgb) < TOL;
+      html += `<div class="color-preset${isActive ? ' active' : ''}" data-preset-color="${color}"${entitiesAttr} style="--preset-color:${color};" title="${color}" tabindex="0" role="button" aria-label="Set color ${color}${isActive ? ', active' : ''}"></div>`;
+    });
+    filteredLive.forEach(lc => {
+      const isActive = activeRgb && this._rgbDistance(lc.rgb, activeRgb) < TOL;
+      html += `<div class="color-preset${isActive ? ' active' : ''}" data-preset-color="${lc.hex}" data-preset-rgb="${lc.rgb.join(',')}" data-preset-entities="${lc.entities.join(',')}" style="--preset-color:${lc.hex};" title="${lc.hex}" tabindex="0" role="button" aria-label="Set color ${lc.hex}${isActive ? ', active' : ''}"></div>`;
+    });
+
+    return html;
+  }
+
+  _kelvinToRgb(kelvin) {
+    // Tanner Helland approximation — accurate enough for a UI swatch.
+    if (!Number.isFinite(kelvin) || kelvin <= 0) return [255, 169, 0]; // fallback warm
+    // Clamp to the formula's domain of validity. Outside this range the
+    // approximation produces NaN (log of negatives) or wildly inaccurate values.
+    const k = Math.max(1000, Math.min(40000, kelvin));
+    const temp = k / 100;
+    let r, g, b;
+    if (temp <= 66) {
+      r = 255;
+      g = 99.4708025861 * Math.log(temp) - 161.1195681661;
+      b = temp <= 19 ? 0 : 138.5177312231 * Math.log(temp - 10) - 305.0447927307;
+    } else {
+      r = 329.698727446 * Math.pow(temp - 60, -0.1332047592);
+      g = 288.1221695283 * Math.pow(temp - 60, -0.0755148492);
+      b = 255;
+    }
+    return [Math.max(0, Math.min(255, Math.round(r))),
+            Math.max(0, Math.min(255, Math.round(g))),
+            Math.max(0, Math.min(255, Math.round(b)))];
+  }
+
+  _renderTemperaturePresets() {
+    if (!this._config.show_live_colors) return '';
+    const temps = this._getLiveTemperatures();
+    if (temps.length === 0) return '';
+
+    const activeKelvin = this._getActivePresetTemp();
+
+    let html = '';
+    temps.forEach(t => {
+      const rgb = this._kelvinToRgb(t.kelvin);
+      const hex = '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
+      const entities = t.entities.join(',');
+      const isActive = activeKelvin !== null && Math.abs(t.kelvin - activeKelvin) < SpatialLightColorCard.TEMP_TOLERANCE;
+      html += `<div class="temp-preset${isActive ? ' active' : ''}" data-preset-kelvin="${t.kelvin}" data-preset-entities="${entities}" style="--preset-color:${hex};" title="${t.kelvin}K" tabindex="0" role="button" aria-label="Set color temperature ${t.kelvin} Kelvin${isActive ? ', active' : ''}"><span class="temp-label">${t.kelvin}K</span></div>`;
+    });
+
+    return html;
+  }
+
+  _getAvailableEffects() {
+    const presets = this._config.effect_presets;
+    if (!presets || presets.length === 0) return [];
+
+    // "selected" means the user explicitly selected lights (not just default_entity)
+    const hasSelection = this._selectedLights.size > 0;
+    const pool = hasSelection ? [...this._selectedLights] : (this._config.entities || []);
+    if (pool.length === 0) return [];
+
+    // Collect effect_list from each entity in the full pool
+    const entityEffectSets = new Map(); // entity_id -> Set of effects
+    for (const id of pool) {
+      const st = this._hass?.states?.[id];
+      if (!st) continue;
+      const effectList = st.attributes.effect_list;
+      if (!Array.isArray(effectList)) continue;
+      entityEffectSets.set(id, new Set(effectList));
+    }
+
+    // If no entities have effect_list, show nothing
+    if (entityEffectSets.size === 0) return [];
+
+    // Global filter mode
+    const globalMode = hasSelection
+      ? (this._config.effect_filter_selected || 'all')
+      : (this._config.effect_filter_default || 'any');
+
+    return presets.filter(preset => {
+      const presetLights = preset.lights && preset.lights.length > 0 ? preset.lights : null;
+
+      // Prerequisite: if preset has a lights restriction, at least one
+      // restricted light must be in the pool for the effect to be relevant
+      if (presetLights && !pool.some(id => presetLights.includes(id))) return false;
+
+      // Determine effective filter mode: per-preset override > global
+      const presetFilterKey = hasSelection ? 'filter_selected' : 'filter_default';
+      const effectiveMode = preset[presetFilterKey] || globalMode;
+
+      // Visibility is always checked against the full pool (all selected,
+      // or all card entities). The lights restriction only gates relevance
+      // (prerequisite above) and controls which lights get the effect applied.
+      const checkIds = [...pool];
+
+      // Count how many check-lights actually support this effect
+      const supporting = checkIds.filter(id => {
+        const effects = entityEffectSets.get(id);
+        return effects && effects.has(preset.effect);
+      });
+
+      if (effectiveMode === 'all') {
+        return supporting.length === checkIds.length;
+      }
+      return supporting.length > 0;
+    });
+  }
+
+  _getActivePresetEffect() {
+    const controlled = this._getControlledEntities();
+    if (controlled.length === 0) return null;
+
+    const entitiesToCheck = this._selectedLights.size > 0
+      ? controlled
+      : this._config.entities;
+
+    let referenceEffect = null;
+    let anyEffectOn = false;
+
+    for (const id of entitiesToCheck) {
+      const st = this._hass?.states?.[id];
+      if (!st || st.state !== 'on') continue;
+      const effect = st.attributes.effect;
+      if (!effect) continue;
+      anyEffectOn = true;
+      if (!referenceEffect) {
+        referenceEffect = effect;
+      } else if (referenceEffect !== effect) {
+        return null;
+      }
+    }
+    if (!anyEffectOn || !referenceEffect) return null;
+    return referenceEffect;
+  }
+
+  _renderEffectPresets() {
+    const available = this._getAvailableEffects();
+    if (available.length === 0) return '';
+
+    const activeEffect = this._getActivePresetEffect();
+
+    // Find which entities currently have each effect active (for highlighting)
+    const effectEntities = {};
+    for (const id of this._config.entities) {
+      const st = this._hass?.states?.[id];
+      if (!st || st.state !== 'on') continue;
+      const eff = st.attributes.effect;
+      if (!eff) continue;
+      if (!effectEntities[eff]) effectEntities[eff] = [];
+      effectEntities[eff].push(id);
+    }
+
+    let html = '';
+    available.forEach(preset => {
+      const isActive = activeEffect && activeEffect === preset.effect;
+      let entities = effectEntities[preset.effect] || [];
+      // Only highlight entities within the preset's lights restriction
+      if (preset.lights && preset.lights.length > 0) {
+        const allowed = new Set(preset.lights);
+        entities = entities.filter(id => allowed.has(id));
+      }
+      const entitiesAttr = entities.length ? ` data-preset-entities="${entities.join(',')}"` : '';
+      const escapedEffect = this._escapeHtml(preset.effect);
+      html += `<div class="effect-preset${isActive ? ' active' : ''}" data-preset-effect="${escapedEffect}" data-preset-icon="${this._escapeHtml(preset.icon)}"${entitiesAttr} title="${escapedEffect}" tabindex="0" role="button" aria-label="Effect ${escapedEffect}${isActive ? ', active' : ''}"><ha-icon icon="${this._escapeHtml(preset.icon)}"></ha-icon><span class="effect-label">${escapedEffect}</span></div>`;
+    });
+
+    return html;
+  }
+
+  _renderPresetsContent() {
+    const colorHtml = this._renderColorPresets();
+    const tempHtml = this._renderTemperaturePresets();
+    const effectHtml = this._renderEffectPresets();
+    if (!colorHtml && !tempHtml && !effectHtml) return '';
+    let html = colorHtml || '';
+    if (colorHtml && tempHtml) {
+      html += '<div class="preset-separator" aria-hidden="true"></div>';
+    }
+    html += tempHtml || '';
+    const beforeEffect = colorHtml || tempHtml;
+    if (beforeEffect && effectHtml) {
+      html += '<div class="preset-separator" aria-hidden="true"></div>';
+    }
+    html += effectHtml || '';
+    return html;
+  }
+
+  _updateSeparatorVisibility() {
+    if (!this.shadowRoot) return;
+    this.shadowRoot.querySelectorAll('.preset-separator').forEach(sep => {
+      const prev = sep.previousElementSibling;
+      const next = sep.nextElementSibling;
+      if (!prev || !next) {
+        sep.style.display = 'none';
+        return;
+      }
+      // Hide separator first to measure natural layout without its space influence
+      sep.style.display = 'none';
+      const prevTop = prev.getBoundingClientRect().top;
+      const nextTop = next.getBoundingClientRect().top;
+      // Only show if the last color preset and first temp preset are on the same row
+      if (Math.abs(prevTop - nextTop) <= 2) {
+        sep.style.display = '';
+      }
+    });
+  }
+
+  _applyColorWheelSelection(rgb) {
+    const controlled = this._selectedLights.size > 0
+      ? [...this._selectedLights]
+      : (this._config.default_entity ? [this._config.default_entity] : []);
+    if (controlled.length === 0 || !rgb) return;
+
+    // Cover as many selected lights as possible with Z2M group entities so
+    // each group becomes a single Zigbee groupcast; leftover bulbs go out as
+    // a per-entity batched call.
+    const plan = this._planGroupedDispatch(controlled, 'rgb');
+    for (const groupId of plan.groups) {
+      this._hass.callService('light', 'turn_on', { entity_id: groupId, rgb_color: rgb })
+        .catch(err => console.warn('[spatial-light-card] light.turn_on (rgb, group) failed:', err));
+    }
+    if (plan.uncovered.length === 0) return;
+    const targets = this._getServiceTargets(plan.uncovered, 'rgb');
+    if (targets.length === 0) return;
+    this._hass.callService('light', 'turn_on', { entity_id: targets, rgb_color: rgb })
+      .catch(err => console.warn('[spatial-light-card] light.turn_on (rgb) failed:', err));
+  }
+
+  /** ---------- Large color wheel (long-press) ---------- */
+  _openLargeColorWheel() {
+    this._largeColorWheelOpen = true;
+    this._largeColorWheelOpenedAt = Date.now();
+    // The overlay close-on-backdrop logic uses `_largeWheelBackdropArmed`,
+    // which only flips true on a fresh pointerdown directly on the backdrop.
+    // The long-press release that opened this overlay isn't a pointerdown on
+    // the overlay (the original pointerdown was on the mini wheel before the
+    // overlay even existed), so the synthesized click is automatically ignored.
+    this._largeWheelBackdropArmed = false;
+    const overlay = this._els.colorWheelOverlay;
+    if (!overlay) return;
+
+    overlay.classList.add('visible');
+    this._syncOverlayState();
+
+    // Set initial swatch color from current light state
+    const swatch = this._els.colorWheelPreviewSwatch;
+    if (swatch) {
+      const controlled = this._getControlledEntities();
+      let initColor = null;
+      for (const id of controlled) {
+        const st = this._hass?.states?.[id];
+        if (st && st.state === 'on' && Array.isArray(st.attributes.rgb_color)) {
+          initColor = st.attributes.rgb_color;
+          break;
+        }
+      }
+      if (initColor) {
+        swatch.style.background = `rgb(${initColor[0]},${initColor[1]},${initColor[2]})`;
+      }
+    }
+
+    // Draw the large color wheel
+    const canvas = this._els.colorWheelLarge;
+    if (canvas) {
+      const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (cb) => setTimeout(cb, 16);
+      raf(() => this._drawLargeColorWheel(canvas));
+    }
+
+    this._bindLargeColorWheelEvents();
+  }
+
+  _closeLargeColorWheel() {
+    this._largeColorWheelOpen = false;
+    const overlay = this._els.colorWheelOverlay;
+    if (!overlay) return;
+
+    overlay.classList.remove('visible');
+    this._syncOverlayState();
+
+    // Hide magnifier
+    const mag = this._els.colorWheelMagnifier;
+    if (mag) mag.classList.remove('visible');
+    this._largeWheelGesture = null;
+  }
+
+  _drawLargeColorWheel(canvas) {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
+    const fallbackSize = 512;
+    const cssSize = Math.max(rect.width, rect.height) > 0
+      ? Math.min(rect.width || fallbackSize, rect.height || fallbackSize)
+      : fallbackSize;
+
+    const MAX_CANVAS_SIZE = 4096;
+    let pixelSize = Math.max(1, Math.round(cssSize * dpr));
+    if (!Number.isFinite(pixelSize) || pixelSize > MAX_CANVAS_SIZE || pixelSize < 1) {
+      pixelSize = Math.min(fallbackSize, MAX_CANVAS_SIZE);
+    }
+
+    canvas.width = pixelSize;
+    canvas.height = pixelSize;
+    ctx.clearRect(0, 0, pixelSize, pixelSize);
+
+    const radius = pixelSize / 2;
+    const imageData = ctx.createImageData(pixelSize, pixelSize);
+    const data = imageData.data;
+
+    const hslToRgb = (h, s, l) => {
+      if (s === 0) { const val = Math.round(l * 255); return [val, val, val]; }
+      const hue2rgb = (p, q, t) => {
+        if (t < 0) t += 1; if (t > 1) t -= 1;
+        if (t < 1/6) return p + (q-p)*6*t;
+        if (t < 1/2) return q;
+        if (t < 2/3) return p + (q-p)*(2/3-t)*6;
+        return p;
+      };
+      const q = l < 0.5 ? l*(1+s) : l+s-l*s;
+      const p = 2*l-q;
+      return [Math.round(hue2rgb(p,q,h+1/3)*255), Math.round(hue2rgb(p,q,h)*255), Math.round(hue2rgb(p,q,h-1/3)*255)];
+    };
+
+    for (let y = 0; y < pixelSize; y++) {
+      for (let x = 0; x < pixelSize; x++) {
+        const dx = x + 0.5 - radius;
+        const dy = y + 0.5 - radius;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist > radius) continue;
+
+        const sat = Math.min(1, dist / radius);
+        const hue = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+        const lightness = 0.45 + (1-sat) * 0.35;
+        const [r, g, b] = hslToRgb(hue/360, sat, lightness);
+
+        const idx = (y * pixelSize + x) * 4;
+        data[idx] = r; data[idx+1] = g; data[idx+2] = b; data[idx+3] = 255;
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+
+    ctx.save();
+    ctx.lineWidth = Math.max(1, 1.5 * dpr);
+    ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+    ctx.beginPath();
+    ctx.arc(radius, radius, radius - ctx.lineWidth / 2, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  _getLargeWheelColorAtEvent(e) {
+    const canvas = this._els.colorWheelLarge;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const y = (e.clientY - rect.top) * (canvas.height / rect.height);
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    // Clamp to canvas bounds — Firefox throws IndexSizeError when sx === width.
+    const px = Math.max(0, Math.min(canvas.width - 1, Math.floor(x)));
+    const py = Math.max(0, Math.min(canvas.height - 1, Math.floor(y)));
+    let imageData;
+    try { imageData = ctx.getImageData(px, py, 1, 1); }
+    catch (_) { return null; }
+    const [r, g, b, a] = imageData.data;
+    if (a === 0) return null;
+    return [r, g, b];
+  }
+
+  _updateMagnifier(e) {
+    const canvas = this._els.colorWheelLarge;
+    const magnifier = this._els.colorWheelMagnifier;
+    const magCanvas = this._els.colorWheelMagnifierCanvas;
+    if (!canvas || !magnifier || !magCanvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const canvasX = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const canvasY = (e.clientY - rect.top) * (canvas.height / rect.height);
+
+    // Position magnifier above the touch/pointer point
+    const magSize = 110;
+    const offset = 80;
+    let magX = e.clientX - magSize / 2;
+    let magY = e.clientY - magSize - offset;
+
+    // Keep on screen - flip below if too high
+    if (magY < 8) magY = e.clientY + offset / 2;
+    if (magX < 8) magX = 8;
+    if (magX + magSize > window.innerWidth - 8) magX = window.innerWidth - magSize - 8;
+
+    magnifier.style.left = magX + 'px';
+    magnifier.style.top = magY + 'px';
+    magnifier.classList.add('visible');
+
+    // Draw zoomed view on magnifier canvas
+    const magCtx = magCanvas.getContext('2d');
+    if (!magCtx) return;
+
+    const zoom = 6;
+    const srcSize = magCanvas.width / zoom;
+    const sx = canvasX - srcSize / 2;
+    const sy = canvasY - srcSize / 2;
+
+    magCtx.clearRect(0, 0, magCanvas.width, magCanvas.height);
+    magCtx.imageSmoothingEnabled = false;
+
+    // Clip to circle
+    magCtx.save();
+    magCtx.beginPath();
+    magCtx.arc(magCanvas.width / 2, magCanvas.height / 2, magCanvas.width / 2, 0, Math.PI * 2);
+    magCtx.clip();
+
+    magCtx.drawImage(canvas, sx, sy, srcSize, srcSize, 0, 0, magCanvas.width, magCanvas.height);
+    magCtx.restore();
+
+    // Draw crosshair
+    const cx = magCanvas.width / 2;
+    const cy = magCanvas.height / 2;
+    magCtx.save();
+    magCtx.strokeStyle = 'rgba(255,255,255,0.85)';
+    magCtx.lineWidth = 1.5;
+
+    // Horizontal arms
+    magCtx.beginPath();
+    magCtx.moveTo(cx - 14, cy); magCtx.lineTo(cx - 5, cy);
+    magCtx.moveTo(cx + 5, cy); magCtx.lineTo(cx + 14, cy);
+    magCtx.stroke();
+
+    // Vertical arms
+    magCtx.beginPath();
+    magCtx.moveTo(cx, cy - 14); magCtx.lineTo(cx, cy - 5);
+    magCtx.moveTo(cx, cy + 5); magCtx.lineTo(cx, cy + 14);
+    magCtx.stroke();
+
+    // Center dot
+    magCtx.fillStyle = 'rgba(255,255,255,0.95)';
+    magCtx.beginPath();
+    magCtx.arc(cx, cy, 2, 0, Math.PI * 2);
+    magCtx.fill();
+
+    // Dark outline for visibility on bright colors
+    magCtx.strokeStyle = 'rgba(0,0,0,0.4)';
+    magCtx.lineWidth = 0.75;
+    magCtx.beginPath();
+    magCtx.moveTo(cx - 14, cy); magCtx.lineTo(cx - 5, cy);
+    magCtx.moveTo(cx + 5, cy); magCtx.lineTo(cx + 14, cy);
+    magCtx.moveTo(cx, cy - 14); magCtx.lineTo(cx, cy - 5);
+    magCtx.moveTo(cx, cy + 5); magCtx.lineTo(cx, cy + 14);
+    magCtx.stroke();
+
+    magCtx.restore();
+
+    // Update magnifier border color to match selected color
+    const color = this._getLargeWheelColorAtEvent(e);
+    if (color) {
+      magnifier.style.borderColor = `rgb(${color[0]},${color[1]},${color[2]})`;
+    }
+  }
+
+  _bindLargeColorWheelEvents() {
+    const canvas = this._els.colorWheelLarge;
+    const overlay = this._els.colorWheelOverlay;
+    const doneBtn = this.shadowRoot?.getElementById('colorWheelDoneBtn');
+    const swatch = this._els.colorWheelPreviewSwatch;
+
+    if (!canvas) return;
+
+    // Avoid double-binding
+    if (canvas._largeBound) return;
+    canvas._largeBound = true;
+
+    canvas.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.target.setPointerCapture?.(e.pointerId);
+
+      const color = this._getLargeWheelColorAtEvent(e);
+      this._largeWheelGesture = { pointerId: e.pointerId, pendingColor: color };
+
+      // Only update swatch preview — don't send to lights yet
+      if (color && swatch) {
+        swatch.style.background = `rgb(${color[0]},${color[1]},${color[2]})`;
+        swatch.style.borderColor = `rgba(255,255,255,0.5)`;
+      }
+      this._updateMagnifier(e);
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+      if (!this._largeWheelGesture || this._largeWheelGesture.pointerId !== e.pointerId) return;
+      e.preventDefault();
+
+      const color = this._getLargeWheelColorAtEvent(e);
+      if (color) {
+        this._largeWheelGesture.pendingColor = color;
+        // Only update swatch preview — don't send to lights during drag
+        if (swatch) swatch.style.background = `rgb(${color[0]},${color[1]},${color[2]})`;
+      }
+      this._updateMagnifier(e);
+    });
+
+    canvas.addEventListener('pointerup', (e) => {
+      e.target.releasePointerCapture?.(e.pointerId);
+
+      // Apply the final selected color to lights only if pointer ended inside the wheel
+      const gesture = this._largeWheelGesture;
+      this._largeWheelGesture = null;
+      if (gesture && gesture.pendingColor) {
+        const color = this._getLargeWheelColorAtEvent(e);
+        if (color) {
+          this._applyColorWheelSelection(color);
+          if (swatch) swatch.style.background = `rgb(${color[0]},${color[1]},${color[2]})`;
+        }
+      }
+
+      // Hide magnifier
+      const mag = this._els.colorWheelMagnifier;
+      if (mag) mag.classList.remove('visible');
+    });
+
+    canvas.addEventListener('pointercancel', (e) => {
+      e.target.releasePointerCapture?.(e.pointerId);
+      this._largeWheelGesture = null;
+
+      const mag = this._els.colorWheelMagnifier;
+      if (mag) mag.classList.remove('visible');
+    });
+
+    // Close on backdrop click — but only when a deliberate pointerdown landed
+    // on the overlay backdrop itself. The long-press that opened this overlay
+    // was a pointerdown on the mini wheel; the synthesized click after the
+    // user's release also targets the backdrop, but we never saw a backdrop
+    // pointerdown for it, so this check filters it out. Movement / no-movement
+    // doesn't matter — what matters is that a pointer was deliberately put
+    // down on the backdrop here.
+    if (overlay) {
+      overlay.addEventListener('pointerdown', (e) => {
+        // Only count pointers that land directly on the backdrop, not on the
+        // canvas, swatch, hint, or done button.
+        if (e.target === overlay) {
+          this._largeWheelBackdropArmed = true;
+        }
+      });
+      overlay.addEventListener('click', (e) => {
+        if (e.target !== overlay) return;
+        if (!this._largeWheelBackdropArmed) return;
+        this._largeWheelBackdropArmed = false;
+        this._closeLargeColorWheel();
+      });
+    }
+
+    // Done button
+    if (doneBtn) {
+      doneBtn.addEventListener('click', () => this._closeLargeColorWheel());
+    }
+  }
+
+  _applyTemperaturePreset(kelvin) {
+    const controlled = this._selectedLights.size > 0
+      ? [...this._selectedLights]
+      : (this._config.default_entity ? [this._config.default_entity] : []);
+    if (controlled.length === 0 || !Number.isFinite(kelvin)) return;
+
+    const plan = this._planGroupedDispatch(controlled, 'color_temp');
+    for (const groupId of plan.groups) {
+      this._hass.callService('light', 'turn_on', { entity_id: groupId, color_temp_kelvin: kelvin })
+        .catch(err => console.warn('[spatial-light-card] light.turn_on (color_temp, group) failed:', err));
+    }
+    if (plan.uncovered.length > 0) {
+      const targets = this._getServiceTargets(plan.uncovered, 'color_temp');
+      if (targets.length > 0) {
+        this._hass.callService('light', 'turn_on', { entity_id: targets, color_temp_kelvin: kelvin })
+          .catch(err => console.warn('[spatial-light-card] light.turn_on (color_temp) failed:', err));
+      }
+    }
+
+    // Update slider to reflect the new temp
+    if (this._els.temperatureSlider) {
+      this._els.temperatureSlider.value = String(kelvin);
+      this._updateSliderVisual(this._els.temperatureSlider);
+    }
+    if (this._els.temperatureValue) {
+      this._els.temperatureValue.textContent = `${kelvin}K`;
+    }
+  }
+
+  _applyEffectPreset(effectName) {
+    if (!effectName) return;
+    const preset = (this._config.effect_presets || []).find(p => p.effect === effectName);
+    const restrictedLights = preset && preset.lights && preset.lights.length > 0 ? new Set(preset.lights) : null;
+
+    let targets;
+    if (this._selectedLights.size > 0) {
+      // User explicitly selected lights — intersect with restriction
+      targets = [...this._selectedLights];
+      if (restrictedLights) targets = targets.filter(id => restrictedLights.has(id));
+    } else if (restrictedLights) {
+      // Nothing selected but preset is restricted — apply to all restricted lights
+      targets = [...restrictedLights];
+    } else {
+      // Nothing selected, no restriction — apply to all canvas entities
+      targets = [...(this._config.entities || [])];
+    }
+    if (targets.length === 0) return;
+
+    // Filter to available `light.*` entities that actually expose this effect.
+    // Effects vary per bulb so this can't always be a single batched call;
+    // however, lights that share an effect_list usually accept a batched call.
+    const supported = targets.filter(entity_id => {
+      if (!entity_id.startsWith('light.')) return false;
+      if (!this._isEntityAvailable(entity_id)) return false;
+      const st = this._hass?.states?.[entity_id];
+      const effectList = st && st.attributes.effect_list;
+      return Array.isArray(effectList) && effectList.includes(effectName);
+    });
+    if (supported.length === 0) return;
+    // Try to cover the supporting subset with Z2M groups; remaining bulbs
+    // go via the batched effect call.
+    const plan = this._planGroupedDispatch(supported, 'effect', effectName);
+    for (const groupId of plan.groups) {
+      this._hass.callService('light', 'turn_on', { entity_id: groupId, effect: effectName })
+        .catch(err => console.warn('[spatial-light-card] light.turn_on (effect, group) failed:', err));
+    }
+    const leftover = plan.uncovered.filter(id => supported.includes(id));
+    if (leftover.length > 0) {
+      this._hass.callService('light', 'turn_on', { entity_id: leftover, effect: effectName })
+        .catch(err => console.warn('[spatial-light-card] light.turn_on (effect) failed:', err));
+    }
+  }
+
+  _handleBrightnessInput(e) {
+    const val = parseInt(e.target.value, 10);
+    if (e.target.dataset.ignoreChange === 'true') {
+      e.target.value = e.target.dataset.startValue || e.target.value;
+      this._updateSliderVisual(e.target);
+      return;
+    }
+    if (this._els.brightnessValue) this._els.brightnessValue.textContent = `${Math.round((val / 255) * 100)}%`;
+    this._updateSliderVisual(this._els.brightnessSlider);
+    this._pendingBrightness = val;
+  }
+  _handleBrightnessChange() {
+    if (this._pendingBrightness == null) return;
+    if (this._els.brightnessSlider && this._els.brightnessSlider.dataset.ignoreChange === 'true') {
+      this._pendingBrightness = null;
+      return;
+    }
+    const controlled = this._selectedLights.size > 0
+      ? [...this._selectedLights]
+      : (this._config.default_entity ? [this._config.default_entity] : []);
+    if (controlled.length === 0) { this._pendingBrightness = null; return; }
+
+    const b = this._pendingBrightness;
+    this._pendingBrightness = null;
+    const plan = this._planGroupedDispatch(controlled, 'brightness');
+    for (const groupId of plan.groups) {
+      this._hass.callService('light', 'turn_on', { entity_id: groupId, brightness: b })
+        .catch(err => console.warn('[spatial-light-card] light.turn_on (brightness, group) failed:', err));
+    }
+    if (plan.uncovered.length === 0) return;
+    const targets = this._getServiceTargets(plan.uncovered, 'brightness');
+    if (targets.length === 0) return;
+    this._hass.callService('light', 'turn_on', { entity_id: targets, brightness: b })
+      .catch(err => console.warn('[spatial-light-card] light.turn_on (brightness) failed:', err));
+  }
+
+  _handleTemperatureInput(e) {
+    const k = parseInt(e.target.value, 10);
+    if (e.target.dataset.ignoreChange === 'true') {
+      e.target.value = e.target.dataset.startValue || e.target.value;
+      this._updateSliderVisual(e.target);
+      return;
+    }
+    if (this._els.temperatureValue) this._els.temperatureValue.textContent = `${k}K`;
+    this._updateSliderVisual(this._els.temperatureSlider);
+    this._pendingTemperature = k;
+  }
+  _handleTemperatureChange() {
+    if (this._pendingTemperature == null) return;
+    if (this._els.temperatureSlider && this._els.temperatureSlider.dataset.ignoreChange === 'true') {
+      this._pendingTemperature = null;
+      return;
+    }
+    const controlled = this._selectedLights.size > 0
+      ? [...this._selectedLights]
+      : (this._config.default_entity ? [this._config.default_entity] : []);
+    if (controlled.length === 0) { this._pendingTemperature = null; return; }
+
+    const k = this._pendingTemperature;
+    this._pendingTemperature = null;
+    const plan = this._planGroupedDispatch(controlled, 'color_temp');
+    for (const groupId of plan.groups) {
+      this._hass.callService('light', 'turn_on', { entity_id: groupId, color_temp_kelvin: k })
+        .catch(err => console.warn('[spatial-light-card] light.turn_on (color_temp, group) failed:', err));
+    }
+    if (plan.uncovered.length === 0) return;
+    const targets = this._getServiceTargets(plan.uncovered, 'color_temp');
+    if (targets.length === 0) return;
+    this._hass.callService('light', 'turn_on', { entity_id: targets, color_temp_kelvin: k })
+      .catch(err => console.warn('[spatial-light-card] light.turn_on (color_temp) failed:', err));
+  }
+
+  _requestColorWheelDraw(force = false) {
+    // Coalesce multiple requests into a single frame, but accumulate force —
+    // a `force=true` request must take effect even if a non-force request
+    // was already pending. Otherwise an explicit "the canvas is fresh and
+    // empty" caller can be dropped, leaving the wheel unpainted.
+    this._colorWheelPendingForce = (this._colorWheelPendingForce || false) || force;
+    if (this._colorWheelFrame) return;
+    const schedule = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : (cb) => setTimeout(cb, 16);
+    const cancel = typeof cancelAnimationFrame === 'function' ? cancelAnimationFrame : clearTimeout;
+    this._colorWheelCancel = cancel;
+    this._colorWheelFrame = schedule(() => {
+      this._colorWheelFrame = null;
+      const eff = this._colorWheelPendingForce;
+      this._colorWheelPendingForce = false;
+      this.drawColorWheel(eff);
+    });
+  }
+
+  drawColorWheel(force = false) {
+    const canvas = this._els.colorWheel;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // If the canvas isn't laid out yet (e.g. controls just toggled visible,
+    // tab was hidden when this fired, ResizeObserver hasn't fired yet),
+    // re-arm for the next frame instead of giving up. Without this the wheel
+    // can stay blank until something else triggers another draw request.
+    // Cap the retry count so we don't spin forever when the canvas is
+    // intentionally never displayed (e.g. no selection / no default_entity /
+    // no always_show_controls). The ResizeObserver on the canvas will still
+    // fire when it eventually gets a real size, kicking off a fresh request.
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) {
+      this._colorWheelZeroRetries = (this._colorWheelZeroRetries || 0) + 1;
+      if (this._colorWheelZeroRetries < 60 && typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => this._requestColorWheelDraw(force));
+      }
+      return;
+    }
+    this._colorWheelZeroRetries = 0;
+
+    const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) ? window.devicePixelRatio : 1;
+    const fallbackSize = Number(canvas.getAttribute('width')) || 256;
+    const cssSize = Math.max(rect.width, rect.height) > 0
+      ? Math.min(rect.width || fallbackSize, rect.height || fallbackSize)
+      : fallbackSize;
+
+    // Ensure pixelSize is within safe bounds to prevent OOM
+    // Max dimension: 4096px (reasonable for canvas operations)
+    const MAX_CANVAS_SIZE = 4096;
+    let pixelSize = Math.max(1, Math.round(cssSize * dpr));
+
+    // Validate pixelSize is finite and within safe range
+    if (!Number.isFinite(pixelSize) || pixelSize > MAX_CANVAS_SIZE || pixelSize < 1) {
+      console.warn(`Invalid canvas dimensions calculated: ${pixelSize}. Using fallback.`);
+      pixelSize = Math.min(fallbackSize, MAX_CANVAS_SIZE);
+    }
+
+    if (canvas.width !== pixelSize || canvas.height !== pixelSize) {
+      canvas.width = pixelSize;
+      canvas.height = pixelSize;
+    } else if (!force && this._colorWheelLastSize && this._colorWheelLastSize.pixelSize === pixelSize && this._colorWheelLastSize.dpr === dpr) {
+      return;
+    }
+
+    this._colorWheelLastSize = { pixelSize, dpr };
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const radius = pixelSize / 2;
+    const imageData = ctx.createImageData(pixelSize, pixelSize);
+    const data = imageData.data;
+
+    const hslToRgb = (h, s, l) => {
+      if (s === 0) {
+        const val = Math.round(l * 255);
+        return [val, val, val];
+      }
+      const hue2rgb = (p, q, t) => {
+        if (t < 0) t += 1;
+        if (t > 1) t -= 1;
+        if (t < 1 / 6) return p + (q - p) * 6 * t;
+        if (t < 1 / 2) return q;
+        if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+        return p;
+      };
+      const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+      const p = 2 * l - q;
+      const r = hue2rgb(p, q, h + 1 / 3);
+      const g = hue2rgb(p, q, h);
+      const b = hue2rgb(p, q, h - 1 / 3);
+      return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+    };
+
+    for (let y = 0; y < pixelSize; y += 1) {
+      for (let x = 0; x < pixelSize; x += 1) {
+        const dx = x + 0.5 - radius;
+        const dy = y + 0.5 - radius;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist > radius) continue;
+
+        const sat = Math.min(1, dist / radius);
+        const hue = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+        const lightness = 0.45 + (1 - sat) * 0.35;
+        const [r, g, b] = hslToRgb(hue / 360, sat, lightness);
+
+        const idx = (y * pixelSize + x) * 4;
+        data[idx] = r;
+        data[idx + 1] = g;
+        data[idx + 2] = b;
+        data[idx + 3] = 255;
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+
+    ctx.save();
+    ctx.lineWidth = Math.max(1, 1.5 * dpr);
+    ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+    ctx.beginPath();
+    ctx.arc(radius, radius, radius - ctx.lineWidth / 2, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** ---------- Glow updates ---------- */
+
+  /**
+   * Build gradient stops based on falloff mode and optional custom stops.
+   * Returns a CSS gradient string fragment for rgba(r,g,b,...) stops.
+   */
+  _buildGlowGradientStops(r, g, b, falloff, customStops) {
+    // Custom stops take priority
+    if (customStops && customStops.length >= 2) {
+      return customStops.map(([pos, op]) =>
+        `rgba(${r},${g},${b},${op.toFixed(3)}) ${pos}%`
+      ).join(', ');
+    }
+
+    // Preset falloff curves
+    switch (falloff) {
+      case 'linear':
+        return [
+          `rgba(${r},${g},${b},0.8) 0%`,
+          `rgba(${r},${g},${b},0.4) 50%`,
+          `transparent 100%`,
+        ].join(', ');
+      case 'exponential':
+        return [
+          `rgba(${r},${g},${b},0.95) 0%`,
+          `rgba(${r},${g},${b},0.6) 15%`,
+          `rgba(${r},${g},${b},0.2) 40%`,
+          `rgba(${r},${g},${b},0.04) 70%`,
+          `transparent 100%`,
+        ].join(', ');
+      case 'sharp':
+        return [
+          `rgba(${r},${g},${b},1) 0%`,
+          `rgba(${r},${g},${b},0.8) 20%`,
+          `rgba(${r},${g},${b},0.15) 50%`,
+          `transparent 75%`,
+        ].join(', ');
+      case 'uniform':
+        // Solid fill — constant color everywhere. Edge softness is handled
+        // by the mask (custom shapes) or blur (other shapes).
+        return `rgba(${r},${g},${b},1) 0%, rgba(${r},${g},${b},1) 100%`;
+      default: // 'smooth'
+        return [
+          `rgba(${r},${g},${b},0.9) 0%`,
+          `rgba(${r},${g},${b},0.35) 30%`,
+          `rgba(${r},${g},${b},0.08) 65%`,
+          `transparent 100%`,
+        ].join(', ');
+    }
+  }
+
+  /**
+   * Apply edge softness masking to a glow element.
+   * Uses CSS mask-image gradients to feather the edges of directional shapes.
+   */
+  _applyEdgeSoftness(glowEl, gc, isDirectional) {
+    if (gc.edge_softness <= 0) {
+      glowEl.style.maskImage = '';
+      glowEl.style.webkitMaskImage = '';
+      glowEl.style.maskComposite = '';
+      glowEl.style.webkitMaskComposite = '';
+      return;
+    }
+
+    const s = gc.edge_softness;
+
+    if (isDirectional) {
+      // For directional shapes (cone, beam, spotlight, bar):
+      // Horizontal gradient mask fades left/right edges
+      const edgeFade = s * 30; // % from each edge that fades
+      const hMask = `linear-gradient(to right, transparent 0%, black ${edgeFade}%, black ${100 - edgeFade}%, transparent 100%)`;
+      // Vertical gradient mask fades the far end
+      const farFade = 100 - s * 25;
+      const vMask = `linear-gradient(to bottom, black 0%, black ${farFade}%, transparent 100%)`;
+      const combined = `${hMask}, ${vMask}`;
+      glowEl.style.maskImage = combined;
+      glowEl.style.webkitMaskImage = combined;
+      glowEl.style.maskComposite = 'intersect';
+      glowEl.style.webkitMaskComposite = 'source-in';
+    } else {
+      // For radial shapes (round, oval): strengthen edge fade via mask
+      const innerSolid = Math.max(5, 40 - s * 35);
+      const mask = `radial-gradient(ellipse at 50% 50%, black 0%, black ${innerSolid}%, transparent ${80 - s * 20}%)`;
+      glowEl.style.maskImage = mask;
+      glowEl.style.webkitMaskImage = mask;
+      glowEl.style.maskComposite = '';
+      glowEl.style.webkitMaskComposite = '';
+    }
+  }
+
+  /**
+   * Update the glow element for a single light based on entity state.
+   * Supports multiple glow shapes: cone, round, oval, beam, spotlight, bar.
+   * Each shape produces a different visual effect with configurable
+   * direction, size, intensity, edge softness, and gradient falloff.
+   */
+  _updateGlow(lightEl, entityId, state, canvasRect) {
+    const glowEl = lightEl.querySelector('.light-glow');
+    if (!glowEl) return;
+
+    const [domain] = entityId.split('.');
+    const isScene = domain === 'scene';
+    const isBinaryDomain = domain === 'switch' || domain === 'input_boolean' || domain === 'binary_sensor';
+    const isOn = state.state === 'on' || isScene;
+    if (!isOn) {
+      glowEl.style.opacity = '0';
+      glowEl.style.height = '0';
+      glowEl.style.width = '0';
+      return;
+    }
+
+    const gc = this._getGlowConfig(entityId);
+    // Switches, binary sensors, scenes don't have brightness — treat as full (255)
+    const brightness = state.attributes.brightness || ((isScene || isBinaryDomain) ? 255 : 0); // 0-255
+    const ratio = brightness / 255;
+
+    // Determine the glow color
+    let rgb;
+    if (gc.color) {
+      rgb = this._parseColorToRGB(gc.color);
+    }
+    if (!rgb) {
+      const color = this._resolveEntityColor(entityId, true, state.attributes);
+      rgb = this._parseColorToRGB(color);
+    }
+    if (!rgb) {
+      rgb = { r: 255, g: 165, b: 0 }; // fallback orange
+    }
+
+    // Scale dimensions with brightness if configured
+    const length = gc.scale_with_brightness ? gc.length * Math.max(ratio, 0.1) : gc.length;
+    const opacity = gc.scale_with_brightness ? gc.intensity * Math.max(ratio, 0.05) : gc.intensity;
+    const { r, g, b } = rgb;
+
+    // Reset shape-specific properties
+    glowEl.style.clipPath = '';
+    glowEl.style.borderRadius = '';
+
+    switch (gc.shape) {
+      case 'round': {
+        // Circular soft glow centered on the light
+        const size = gc.width;
+        const stops = this._buildGlowGradientStops(r, g, b, gc.falloff, gc.gradient_stops);
+        glowEl.style.width = `${size}px`;
+        glowEl.style.height = `${size}px`;
+        glowEl.style.transform = `translate(-50%, -50%) translateX(${gc.offset_x}px) translateY(${gc.offset_y}px)`;
+        glowEl.style.transformOrigin = '50% 50%';
+        glowEl.style.borderRadius = '50%';
+        glowEl.style.background = `radial-gradient(circle at 50% 50%, ${stops})`;
+        this._applyEdgeSoftness(glowEl, gc, false);
+        break;
+      }
+
+      case 'oval': {
+        // Elliptical glow, rotatable via direction
+        const stops = this._buildGlowGradientStops(r, g, b, gc.falloff, gc.gradient_stops);
+        glowEl.style.width = `${gc.width}px`;
+        glowEl.style.height = `${length}px`;
+        glowEl.style.transform = `translate(-50%, -50%) translateX(${gc.offset_x}px) translateY(${gc.offset_y}px) rotate(${gc.direction}deg)`;
+        glowEl.style.transformOrigin = '50% 50%';
+        glowEl.style.borderRadius = '50%';
+        glowEl.style.background = `radial-gradient(ellipse at 50% 50%, ${stops})`;
+        this._applyEdgeSoftness(glowEl, gc, false);
+        break;
+      }
+
+      case 'semicone': {
+        // Truncated cone — starts with a width at the origin instead of a point.
+        // start_width (0-1) controls how wide the near end is relative to the far end.
+        // 0 = same as cone (point), 0.5 = near end is half the far end width, 1 = bar-like.
+        const sw = gc.start_width > 0 ? gc.start_width : 0.35; // default for semicone shape
+        // Near-end inset: interpolate between cone's topInset (sw=0) and 0% full width (sw=1)
+        const coneTopInset = 50 - (50 / gc.spread);
+        const nearInset = coneTopInset * (1 - sw);
+        glowEl.style.clipPath = `polygon(${nearInset}% 0%, ${100 - nearInset}% 0%, 100% 100%, 0% 100%)`;
+        const stops = this._buildGlowGradientStops(r, g, b, gc.falloff, gc.gradient_stops);
+        glowEl.style.width = `${gc.width}px`;
+        glowEl.style.height = `${length}px`;
+        glowEl.style.transform = `translateX(-50%) translateY(${gc.offset_y}px) translateX(${gc.offset_x}px) rotate(${gc.direction}deg)`;
+        glowEl.style.transformOrigin = '50% 0%';
+        // Use an ellipse gradient that's wider at origin to fill the truncated top
+        const gradEllipseW = 50 + sw * 40; // wider ellipse for wider start
+        glowEl.style.background = `radial-gradient(${gradEllipseW}% 70% at 50% 0%, ${stops})`;
+        this._applyEdgeSoftness(glowEl, gc, true);
+        break;
+      }
+
+      case 'beam': {
+        // Narrow directional beam — like cone but with minimal spread
+        const effectiveSpread = Math.min(gc.spread, 1.15);
+        const topInset = 50 - (50 / effectiveSpread);
+        glowEl.style.clipPath = `polygon(${topInset}% 0%, ${100 - topInset}% 0%, 100% 100%, 0% 100%)`;
+        const stops = this._buildGlowGradientStops(r, g, b, gc.falloff, gc.gradient_stops);
+        glowEl.style.width = `${gc.width}px`;
+        glowEl.style.height = `${length}px`;
+        glowEl.style.transform = `translateX(-50%) translateY(${gc.offset_y}px) translateX(${gc.offset_x}px) rotate(${gc.direction}deg)`;
+        glowEl.style.transformOrigin = '50% 0%';
+        glowEl.style.background = `radial-gradient(ellipse at 50% 0%, ${stops})`;
+        this._applyEdgeSoftness(glowEl, gc, true);
+        break;
+      }
+
+      case 'spotlight': {
+        // Wide spotlight cone with inherently soft edges
+        const effectiveSpread = Math.max(gc.spread, 2.0);
+        const topInset = 50 - (50 / effectiveSpread);
+        glowEl.style.clipPath = `polygon(${topInset}% 0%, ${100 - topInset}% 0%, 100% 100%, 0% 100%)`;
+        // Spotlight uses a softer gradient with wider falloff
+        const spotStops = gc.gradient_stops
+          ? this._buildGlowGradientStops(r, g, b, gc.falloff, gc.gradient_stops)
+          : [
+              `rgba(${r},${g},${b},0.85) 0%`,
+              `rgba(${r},${g},${b},0.45) 20%`,
+              `rgba(${r},${g},${b},0.15) 50%`,
+              `rgba(${r},${g},${b},0.04) 75%`,
+              `transparent 100%`,
+            ].join(', ');
+        glowEl.style.width = `${gc.width}px`;
+        glowEl.style.height = `${length}px`;
+        glowEl.style.transform = `translateX(-50%) translateY(${gc.offset_y}px) translateX(${gc.offset_x}px) rotate(${gc.direction}deg)`;
+        glowEl.style.transformOrigin = '50% 0%';
+        glowEl.style.background = `radial-gradient(ellipse at 50% 0%, ${spotStops})`;
+        // Spotlights always have some edge softness
+        const spotGc = gc.edge_softness > 0 ? gc : { ...gc, edge_softness: Math.max(gc.edge_softness, 0.3) };
+        this._applyEdgeSoftness(glowEl, spotGc, true);
+        break;
+      }
+
+      case 'bar': {
+        // Rectangular bar glow (no clip-path trapezoid, straight sides)
+        const stops = this._buildGlowGradientStops(r, g, b, gc.falloff, gc.gradient_stops);
+        glowEl.style.width = `${gc.width}px`;
+        glowEl.style.height = `${length}px`;
+        glowEl.style.transform = `translateX(-50%) translateY(${gc.offset_y}px) translateX(${gc.offset_x}px) rotate(${gc.direction}deg)`;
+        glowEl.style.transformOrigin = '50% 0%';
+        // Linear gradient from origin to far end
+        glowEl.style.background = `linear-gradient(to bottom, ${stops})`;
+        this._applyEdgeSoftness(glowEl, gc, true);
+        break;
+      }
+
+      case 'custom': {
+        // Polar-coordinate custom shape. The user defines [angle°, radius 0-1]
+        // points and the shape is smoothly interpolated between them.
+        // Falls back to round if custom_shape is not defined or has < 3 points.
+        if (!gc.custom_shape || gc.custom_shape.length < 3) {
+          // Fallback: treat as round
+          const size = gc.width;
+          const fbStops = this._buildGlowGradientStops(r, g, b, gc.falloff, gc.gradient_stops);
+          glowEl.style.width = `${size}px`;
+          glowEl.style.height = `${size}px`;
+          glowEl.style.transform = `translate(-50%, -50%) translateX(${gc.offset_x}px) translateY(${gc.offset_y}px) rotate(${gc.direction}deg)`;
+          glowEl.style.transformOrigin = '50% 50%';
+          glowEl.style.borderRadius = '50%';
+          glowEl.style.background = `radial-gradient(circle at 50% 50%, ${fbStops})`;
+          this._applyEdgeSoftness(glowEl, gc, false);
+          break;
+        }
+
+        const size = gc.width;
+        const stops = this._buildGlowGradientStops(r, g, b, gc.falloff, gc.gradient_stops);
+        glowEl.style.width = `${size}px`;
+        glowEl.style.height = `${size}px`;
+        glowEl.style.transform = `translate(-50%, -50%) translateX(${gc.offset_x}px) translateY(${gc.offset_y}px) rotate(${gc.direction}deg)`;
+        glowEl.style.transformOrigin = '50% 50%';
+        glowEl.style.background = `radial-gradient(circle at 50% 50%, ${stops})`;
+
+        if (gc.edge_softness > 0) {
+          // Canvas-generated mask: shape-following soft edges with smooth falloff.
+          // The mask defines a solid interior and gradual fade at the shape boundary.
+          // This replaces clip-path to avoid hard/sharp polygon edges.
+          const maskUrl = this._getCustomShapeMaskUrl(gc.custom_shape, gc.edge_softness, size);
+          glowEl.style.clipPath = '';
+          glowEl.style.maskImage = `url(${maskUrl})`;
+          glowEl.style.webkitMaskImage = `url(${maskUrl})`;
+          glowEl.style.maskSize = '100% 100%';
+          glowEl.style.webkitMaskSize = '100% 100%';
+          glowEl.style.maskComposite = '';
+          glowEl.style.webkitMaskComposite = '';
+        } else {
+          // Hard edges via clip-path polygon (more efficient, no canvas needed)
+          const polyPoints = this._buildCustomShapePolygon(gc.custom_shape);
+          glowEl.style.clipPath = `polygon(${polyPoints})`;
+          glowEl.style.maskImage = '';
+          glowEl.style.webkitMaskImage = '';
+        }
+        break;
+      }
+
+      default: { // 'cone' — original behavior (also supports start_width for truncated cones)
+        const cTopInset = 50 - (50 / gc.spread);
+        // Apply start_width: interpolate from pointed (sw=0) to full width (sw=1)
+        const nearInset = gc.start_width > 0 ? cTopInset * (1 - gc.start_width) : cTopInset;
+        glowEl.style.clipPath = `polygon(${nearInset}% 0%, ${100 - nearInset}% 0%, 100% 100%, 0% 100%)`;
+        const stops = this._buildGlowGradientStops(r, g, b, gc.falloff, gc.gradient_stops);
+        glowEl.style.width = `${gc.width}px`;
+        glowEl.style.height = `${length}px`;
+        glowEl.style.transform = `translateX(-50%) translateY(${gc.offset_y}px) translateX(${gc.offset_x}px) rotate(${gc.direction}deg)`;
+        glowEl.style.transformOrigin = '50% 0%';
+        glowEl.style.background = `radial-gradient(ellipse at 50% 0%, ${stops})`;
+        this._applyEdgeSoftness(glowEl, gc, true);
+        break;
+      }
+    }
+
+    glowEl.style.filter = `blur(${gc.blur}px)`;
+    glowEl.style.opacity = String(opacity);
+
+    // Apply wall shadow occlusion if walls are configured
+    this._applyWallShadows(glowEl, entityId, gc, canvasRect);
+  }
+
+  /**
+   * Apply wall shadow mask to a glow element. Generates a canvas mask where
+   * wall segments block line-of-sight from the light, creating shadow regions.
+   * The mask is layered on top of any existing shape mask or clip-path.
+   *
+   * Uses a cached mask URL per entity. The mask only needs to be regenerated
+   * when the wall config, canvas dimensions, or glow config changes — NOT on
+   * every brightness/color state update.
+   */
+  _applyWallShadows(glowEl, entityId, gc, canvasRect) {
+    const walls = this._config.glow_walls;
+    if (!walls || walls.length === 0 || !canvasRect) {
+      return;
+    }
+
+    const canvasW = canvasRect.width;
+    const canvasH = canvasRect.height;
+
+    // Check if we already have a valid cached mask URL for this entity.
+    // Wall masks depend on: wall config, light position, glow dimensions, canvas size.
+    // None of these change on a typical hass state update (brightness/color change).
+    // Build a lightweight version key from the inputs that DO change.
+    if (!this._wallMaskPerEntity) this._wallMaskPerEntity = {};
+    const pos = this._config.positions[entityId] || { x: 50, y: 50 };
+    const glowW = parseFloat(glowEl.style.width) || gc.width;
+    const glowH = parseFloat(glowEl.style.height) || gc.length;
+    if (glowW <= 0 || glowH <= 0) return;
+
+    const versionKey = `${(pos.x * 10) | 0},${(pos.y * 10) | 0},${glowW | 0},${glowH | 0},${canvasW | 0},${canvasH | 0},${gc.shape},${gc.direction || 0},${this._wallConfigVersion || 0}`;
+    const cached = this._wallMaskPerEntity[entityId];
+    if (cached && cached.versionKey === versionKey) {
+      // Reuse previous mask URL — skip all computation
+      this._setWallMask(glowEl, cached.maskUrl);
+      return;
+    }
+
+    // Compute glow reach in canvas % for filtering distant walls.
+    // Use the larger of width/height as a conservative radius.
+    const reach = Math.max(glowW, glowH) / 2;
+    const reachPctX = reach / canvasW * 100;
+    const reachPctY = reach / canvasH * 100;
+
+    // Filter walls: skip segments entirely outside the glow's bounding box.
+    // A wall outside the glow area can't cast a shadow visible in the glow.
+    const relevantWalls = [];
+    for (let i = 0; i < walls.length; i++) {
+      const w = walls[i];
+      // Cohen–Sutherland style rejection: both endpoints on the same
+      // side of the bounding box → wall is entirely outside glow reach
+      if (w.x1 < pos.x - reachPctX && w.x2 < pos.x - reachPctX) continue;
+      if (w.x1 > pos.x + reachPctX && w.x2 > pos.x + reachPctX) continue;
+      if (w.y1 < pos.y - reachPctY && w.y2 < pos.y - reachPctY) continue;
+      if (w.y1 > pos.y + reachPctY && w.y2 > pos.y + reachPctY) continue;
+      relevantWalls.push(w);
+    }
+
+    if (relevantWalls.length === 0) {
+      // No walls near this light — no mask needed
+      this._wallMaskPerEntity[entityId] = { versionKey, maskUrl: null };
+      return;
+    }
+
+    // Determine where the light is in the glow element's local space.
+    // Centered shapes (round, oval, custom): light is at center (50%, 50%)
+    // Directional shapes (cone, beam, bar, etc.): light is at top-center (50%, 0%)
+    const isCentered = gc.shape === 'round' || gc.shape === 'oval' || gc.shape === 'custom';
+    const maskSize = 256;
+    const lightMaskX = maskSize / 2;
+    const lightMaskY = isCentered ? maskSize / 2 : 0;
+
+    // Convert only the relevant wall segments to mask pixel coordinates.
+    // Pass glow rotation so walls are counter-rotated into the glow's local space.
+    const wallSegments = this._convertWallsToMaskCoords(
+      relevantWalls, pos.x, pos.y, glowW, glowH, canvasW, canvasH, maskSize, lightMaskX, lightMaskY, gc.direction || 0
+    );
+
+    // Generate (or retrieve cached) wall shadow mask
+    const maskUrl = this._getWallShadowMaskUrl(wallSegments, lightMaskX, lightMaskY, maskSize, gc.shape);
+
+    // Cache for this entity so subsequent state updates skip all the above
+    this._wallMaskPerEntity[entityId] = { versionKey, maskUrl };
+    this._setWallMask(glowEl, maskUrl);
+  }
+
+  /**
+   * Apply a wall mask URL to a glow element, combining with any existing
+   * shape mask (from edge_softness or custom shape).
+   */
+  _setWallMask(glowEl, maskUrl) {
+    if (!maskUrl) return;
+
+    const existingMask = glowEl.style.maskImage || glowEl.style.webkitMaskImage || '';
+    const wallMask = `url(${maskUrl})`;
+
+    if (existingMask && existingMask !== 'none' && existingMask !== '') {
+      // Combine existing mask with wall mask
+      const combined = `${existingMask}, ${wallMask}`;
+      glowEl.style.maskImage = combined;
+      glowEl.style.webkitMaskImage = combined;
+      glowEl.style.maskSize = '100% 100%, 100% 100%';
+      glowEl.style.webkitMaskSize = '100% 100%, 100% 100%';
+      glowEl.style.maskComposite = 'intersect';
+      glowEl.style.webkitMaskComposite = 'source-in';
+    } else {
+      // Wall mask only
+      glowEl.style.maskImage = wallMask;
+      glowEl.style.webkitMaskImage = wallMask;
+      glowEl.style.maskSize = '100% 100%';
+      glowEl.style.webkitMaskSize = '100% 100%';
+      glowEl.style.maskComposite = '';
+      glowEl.style.webkitMaskComposite = '';
+    }
+  }
+
+  /** Update glows for all light elements. Called from updateLights(). */
+  _updateAllGlows() {
+    // Glow works in all modes — check if any glow is enabled
+    const hasGlobalGlow = this._config.glow.enabled;
+    const hasOverrides = Object.keys(this._config.glow_overrides).length > 0;
+    if (!hasGlobalGlow && !hasOverrides) return;
+
+    // Pre-compute canvas rect once per frame (avoid reflow per-light)
+    const walls = this._config.glow_walls;
+    let canvasRect = null;
+    if (walls && walls.length > 0) {
+      const canvas = this._els.canvas;
+      if (canvas) {
+        canvasRect = canvas.getBoundingClientRect();
+        if (canvasRect.width <= 0 || canvasRect.height <= 0) canvasRect = null;
+      }
+    }
+
+    const lights = this.shadowRoot.querySelectorAll('.light');
+    lights.forEach(lightEl => {
+      const id = lightEl.dataset.entity;
+      const st = this._hass?.states[id];
+      if (!st) return;
+      // Only update if this entity actually has glow enabled
+      const gc = this._getGlowConfig(id);
+      if (!gc.enabled) return;
+      this._updateGlow(lightEl, id, st, canvasRect);
+    });
+  }
+
+  /** ---------- Light updates ---------- */
+  updateLights() {
+    if (!this._hass) return;
+    const lights = this.shadowRoot.querySelectorAll('.light');
+    lights.forEach(light => {
+      const id = light.dataset.entity;
+      const st = this._hass.states[id];
+      if (!st) return;
+
+      const [domain] = id.split('.');
+      const isOn = st.state === 'on';
+      const isScene = domain === 'scene';
+
+      const color = this._resolveEntityColor(id, isOn, st.attributes);
+
+      // Determine if this light is in icon-only mode
+      const isIconOnly = this._config.icon_only_overrides[id] !== undefined
+        ? this._config.icon_only_overrides[id]
+        : this._config.icon_only_mode;
+      const isMinimalUI = !!this._config.minimal_ui;
+
+      if (isIconOnly || isMinimalUI) {
+        // For icon-only or minimal-ui mode, use CSS variable for color
+        light.style.background = 'transparent';
+        if (color !== 'transparent') {
+          light.style.setProperty('--light-color', color);
+        } else {
+          light.style.removeProperty('--light-color');
+        }
+      } else {
+        // Standard mode: set background directly
+        light.style.removeProperty('--light-color');
+        if (color !== 'transparent') {
+          light.style.background = color;
+        } else {
+          light.style.background = ''; // Fallback to CSS
+        }
+      }
+
+      // Set the halo's box-shadow inline with a literal color value.
+      // Box-shadow renders without a filter region (unlike filter:blur),
+      // so it isn't clipped to a rectangular compositor-layer bounding
+      // box on iOS. Combined with removing will-change from .light
+      // (which was forcing a permanent layer with rectangular bounds
+      // around each light), the colored glow now paints naturally and
+      // updates without the stale-cache rectangles.
+      const isLit = (isOn || isScene) && color !== 'transparent';
+      const haloEl = light.querySelector('.light-halo');
+      if (haloEl) {
+        if (isLit) {
+          // Two-layer box-shadow: a denser inner core + a wider soft
+          // outer halo for a richer glow than a single shadow gives.
+          // Box-shadow paints without a filter region, so neither layer
+          // creates a clipping rectangle on iOS. Scale with the light's
+          // configured size so larger lights get a proportionally
+          // larger glow.
+          const lightSize = this._config.size_overrides[id] || this._config.light_size;
+          const scale = lightSize / 56;
+          const ib = Math.round(12 * scale);
+          const is = Math.round(4 * scale);
+          const ob = Math.round(36 * scale);
+          const os = Math.round(8 * scale);
+          haloEl.style.boxShadow = `0 0 ${ib}px ${is}px ${color}, 0 0 ${ob}px ${os}px ${color}`;
+          haloEl.style.opacity = '1';
+        } else {
+          haloEl.style.removeProperty('box-shadow');
+          haloEl.style.removeProperty('opacity');
+        }
+      }
+
+      if ((isIconOnly || isMinimalUI) && isLit) {
+        light.style.setProperty('--light-shadow-baked', `0 0 8px ${color}`);
+        light.style.setProperty('--light-border-baked', color);
+      } else {
+        light.style.removeProperty('--light-shadow-baked');
+        light.style.removeProperty('--light-border-baked');
+      }
+      const iconEl = light.querySelector('.light-icon-mdi');
+      if (iconEl && iconEl.style.filter) iconEl.style.removeProperty('filter');
+
+      light.classList.toggle('off', !isOn && !isScene);
+      light.classList.toggle('on', isOn || isScene);
+
+      // H10: keep the unavailable class + badge in sync without a full
+      // re-render. The badge is added/removed lazily — most lights stay
+      // available, so we avoid touching DOM when nothing changes.
+      const isUnavailable = st.state === 'unavailable' || st.state === 'unknown';
+      const wasUnavailable = light.classList.contains('unavailable');
+      if (isUnavailable !== wasUnavailable) {
+        light.classList.toggle('unavailable', isUnavailable);
+        light.setAttribute('aria-disabled', isUnavailable ? 'true' : 'false');
+        const friendly = st.attributes.friendly_name || id;
+        light.setAttribute('aria-label', isUnavailable ? `${friendly} (unavailable)` : friendly);
+        let badge = light.querySelector(':scope > .light-status-badge');
+        if (isUnavailable && !badge) {
+          badge = document.createElement('div');
+          badge.className = 'light-status-badge';
+          badge.setAttribute('aria-hidden', 'true');
+          badge.title = 'Unavailable';
+          badge.textContent = '?';
+          light.appendChild(badge);
+        } else if (!isUnavailable && badge) {
+          badge.remove();
+        }
+      }
+
+      // Ensure selected styling matches current selection set
+      const selected = this._selectedLights.has(id);
+      light.classList.toggle('selected', selected);
+    });
+
+    // Toggle has-selection class on canvas for unselected dimming
+    if (this._els.canvas) {
+      this._els.canvas.classList.toggle('has-selection', this._selectedLights.size > 0);
+    }
+
+    // Update controls to reflect averaged state
+    const shouldShowControls = this._config.always_show_controls || this._selectedLights.size > 0 || this._config.default_entity;
+    if (shouldShowControls) {
+      const controlContext = this._getControlContext();
+      this._updateControlValues(controlContext);
+    }
+    // Show/hide floating controls if used
+    if (this._els.controlsFloating) {
+      this._els.controlsFloating.classList.toggle('visible', shouldShowControls);
+    }
+    // Show/hide below controls if used
+    if (this._els.controlsBelow) {
+      this._els.controlsBelow.classList.toggle('visible', shouldShowControls);
+    }
+    if ((this._config.always_show_controls || this._selectedLights.size > 0 || this._config.default_entity) && this._els.colorWheel) {
+      this._requestColorWheelDraw();
+    }
+    this._refreshColorPresets();
+    this._refreshEntityIcons();
+    this._updateCanvasElements();
+    this._updateAllGlows();
+    // Reposition labels synchronously so they don't flash in the wrong
+    // position for 1 frame before the rAF callback would run.
+    // updateLights() only toggles classes/styles on existing DOM, so layout
+    // is already current and offsetWidth measurements are valid immediately.
+    this._repositionLabels();
+  }
+
+  /** ---------- Canvas element live updates ---------- */
+  _updateCanvasElements() {
+    if (!this._hass || !this._config.canvas_elements) return;
+
+    // Use a cache to skip DOM updates when values haven't changed
+    if (!this._canvasElementCache) this._canvasElementCache = new Map();
+
+    this._config.canvas_elements.forEach(el => {
+      if (el.type === 'sensor' && el.entity) {
+        const st = this._hass.states[el.entity];
+        const value = st ? st.state : '—';
+        const unit = el.suffix !== null ? el.suffix : (st?.attributes?.unit_of_measurement || '');
+        const displayValue = `${el.prefix}${value}${unit}`;
+
+        // Skip DOM update if value hasn't changed
+        if (this._canvasElementCache.get(el.id) === displayValue) return;
+        this._canvasElementCache.set(el.id, displayValue);
+
+        const domEl = this.shadowRoot.querySelector(`.canvas-element[data-element-id="${CSS.escape(el.id)}"]`);
+        if (!domEl) return;
+        const valueEl = domEl.querySelector('.ce-value');
+        if (valueEl) valueEl.textContent = displayValue;
+      }
+      // Template updates are push-based via _updateCanvasElement(), no polling needed
+    });
+  }
+
+  _updateCanvasElement(elementId) {
+    const el = this._config.canvas_elements?.find(e => e.id === elementId);
+    if (!el) return;
+    const domEl = this.shadowRoot?.querySelector(`.canvas-element[data-element-id="${CSS.escape(elementId)}"]`);
+    if (!domEl) return;
+
+    if (el.type === 'template') {
+      const rendered = this._templateResults.get(elementId) || '';
+      const valueEl = domEl.querySelector('.ce-value');
+      if (valueEl) valueEl.textContent = rendered;
+    }
+  }
+
+  /** ---------- Template subscription management ---------- */
+  async _subscribeTemplates() {
+    // Unsubscribe all existing template subscriptions
+    this._unsubscribeTemplates();
+
+    if (!this._hass?.connection) return;
+
+    // H16: race guard. If `_subscribeTemplates` is invoked again before the
+    // previous run's `await` resolves, the older `unsub` would otherwise be
+    // stored into the new run's map (or the new run's `unsub` would be
+    // overwritten by the old). Each invocation gets a generation token; a
+    // stalled await whose generation doesn't match the current one is
+    // immediately unsubscribed and discarded.
+    this._templatesGeneration = (this._templatesGeneration || 0) + 1;
+    const gen = this._templatesGeneration;
+
+    const templateElements = (this._config.canvas_elements || [])
+      .filter(el => el.type === 'template' && el.content);
+
+    for (const el of templateElements) {
+      try {
+        const unsub = await this._hass.connection.subscribeMessage(
+          (msg) => {
+            // Stale callback: subscription belongs to a previous generation.
+            if (gen !== this._templatesGeneration) return;
+            this._templateResults.set(el.id, msg.result);
+            this._updateCanvasElement(el.id);
+          },
+          {
+            type: 'render_template',
+            template: el.content,
+          }
+        );
+        if (gen !== this._templatesGeneration) {
+          // We were superseded while awaiting — drop this subscription on the floor.
+          try { unsub(); } catch (_) { /* ignore */ }
+        } else {
+          this._templateSubscriptions.set(el.id, unsub);
+        }
+      } catch (err) {
+        if (gen === this._templatesGeneration) {
+          // Template rendering may not be available or template may be invalid
+          this._templateResults.set(el.id, '');
+        }
+      }
+    }
+  }
+
+  _unsubscribeTemplates() {
+    for (const [, unsub] of this._templateSubscriptions) {
+      if (typeof unsub === 'function') {
+        try { unsub(); } catch (_) { /* ignore */ }
+      }
+    }
+    this._templateSubscriptions.clear();
+    this._templateResults.clear();
+  }
+
+  /** ---------- YAML generation ---------- */
+  _generateYAML() {
+    const indent = '  ';
+    const yamlLines = [`type: custom:spatial-light-color-card`];
+
+    if (this._config.title) yamlLines.push(`title: ${this._config.title}`);
+    yamlLines.push(`canvas_height: ${this._config.canvas_height}`);
+    yamlLines.push(`grid_size: ${this._config.grid_size}`);
+    if (this._config.label_mode) yamlLines.push(`label_mode: ${this._config.label_mode}`);
+    yamlLines.push(`always_show_controls: ${!!this._config.always_show_controls}`);
+    yamlLines.push(`controls_below: ${!!this._config.controls_below}`);
+    yamlLines.push(`show_entity_icons: ${!!this._config.show_entity_icons}`);
+    yamlLines.push(`switch_single_tap: ${!!this._config.switch_single_tap}`);
+    yamlLines.push(`icon_style: ${this._config.icon_style}`);
+    if (this._config.default_entity) yamlLines.push(`default_entity: ${this._config.default_entity}`);
+    if (Number.isFinite(this._config.temperature_min)) yamlLines.push(`temperature_min: ${this._config.temperature_min}`);
+    if (Number.isFinite(this._config.temperature_max)) yamlLines.push(`temperature_max: ${this._config.temperature_max}`);
+
+    // Light size settings
+    if (this._config.light_size !== 56) yamlLines.push(`light_size: ${this._config.light_size}`);
+    if (this._config.icon_only_mode) yamlLines.push(`icon_only_mode: true`);
+
+    // Per-entity size overrides
+    if (this._config.size_overrides && Object.keys(this._config.size_overrides).length) {
+      yamlLines.push('size_overrides:');
+      Object.entries(this._config.size_overrides).forEach(([entity, size]) => {
+        yamlLines.push(`${indent}${entity}: ${size}`);
+      });
+    }
+
+    // Per-entity icon-only overrides
+    if (this._config.icon_only_overrides && Object.keys(this._config.icon_only_overrides).length) {
+      yamlLines.push('icon_only_overrides:');
+      Object.entries(this._config.icon_only_overrides).forEach(([entity, val]) => {
+        yamlLines.push(`${indent}${entity}: ${val}`);
+      });
+    }
+
+    // Colors
+    if (this._config.switch_on_color !== '#ffa500') yamlLines.push(`switch_on_color: "${this._config.switch_on_color}"`);
+    if (this._config.switch_off_color !== '#3a3a3a') yamlLines.push(`switch_off_color: "${this._config.switch_off_color}"`);
+    if (this._config.scene_color !== '#6366f1') yamlLines.push(`scene_color: "${this._config.scene_color}"`);
+    if (this._config.binary_sensor_on_color !== '#4caf50') yamlLines.push(`binary_sensor_on_color: "${this._config.binary_sensor_on_color}"`);
+    if (this._config.binary_sensor_off_color !== '#2a2a2a') yamlLines.push(`binary_sensor_off_color: "${this._config.binary_sensor_off_color}"`);
+
+    if (this._config.color_overrides && Object.keys(this._config.color_overrides).length) {
+      yamlLines.push('color_overrides:');
+      Object.entries(this._config.color_overrides).forEach(([entity, val]) => {
+        if (typeof val === 'string') {
+          yamlLines.push(`${indent}${entity}: "${val}"`);
+        } else {
+          yamlLines.push(`${indent}${entity}:`);
+          if (val.state_on) yamlLines.push(`${indent}${indent}state_on: "${val.state_on}"`);
+          if (val.state_off) yamlLines.push(`${indent}${indent}state_off: "${val.state_off}"`);
+        }
+      });
+    }
+
+    if (this._config.color_presets && this._config.color_presets.length) {
+      yamlLines.push('color_presets:');
+      this._config.color_presets.forEach(color => {
+        yamlLines.push(`${indent}- "${color}"`);
+      });
+    }
+    if (this._config.show_live_colors) yamlLines.push(`show_live_colors: true`);
+
+    if (this._config.label_overrides && Object.keys(this._config.label_overrides).length) {
+      yamlLines.push('label_overrides:');
+      Object.entries(this._config.label_overrides).forEach(([entity, label]) => {
+        yamlLines.push(`${indent}${entity}: ${label}`);
+      });
+    }
+
+    if (this._config.background_image) {
+      const bg = this._config.background_image;
+      if (typeof bg === 'string') {
+        yamlLines.push(`background_image: ${bg}`);
+      } else {
+        yamlLines.push('background_image:');
+        if (bg.url) yamlLines.push(`${indent}url: ${bg.url}`);
+        if (bg.size) yamlLines.push(`${indent}size: ${bg.size}`);
+        if (bg.position) yamlLines.push(`${indent}position: ${bg.position}`);
+        if (bg.repeat) yamlLines.push(`${indent}repeat: ${bg.repeat}`);
+        if (bg.blend_mode) yamlLines.push(`${indent}blend_mode: ${bg.blend_mode}`);
+        if (bg.opacity !== undefined) yamlLines.push(`${indent}opacity: ${bg.opacity}`);
+      }
+    }
+
+    yamlLines.push('entities:');
+    this._config.entities.forEach(ent => { yamlLines.push(`${indent}- ${ent}`); });
+
+    yamlLines.push('positions:');
+    Object.entries(this._config.positions).forEach(([ent, pos]) => {
+      yamlLines.push(`${indent}${ent}:`);
+      yamlLines.push(`${indent}${indent}x: ${Number(pos.x.toFixed ? pos.x.toFixed(2) : pos.x)}`);
+      yamlLines.push(`${indent}${indent}y: ${Number(pos.y.toFixed ? pos.y.toFixed(2) : pos.y)}`);
+    });
+
+    // Canvas elements
+    if (this._config.canvas_elements && this._config.canvas_elements.length) {
+      yamlLines.push('canvas_elements:');
+      this._config.canvas_elements.forEach(el => {
+        yamlLines.push(`${indent}- type: ${el.type}`);
+        if (el.id && !el.id.startsWith('canvas_el_')) yamlLines.push(`${indent}${indent}id: ${el.id}`);
+        yamlLines.push(`${indent}${indent}position:`);
+        yamlLines.push(`${indent}${indent}${indent}x: ${Number(el.position.x.toFixed ? el.position.x.toFixed(2) : el.position.x)}`);
+        yamlLines.push(`${indent}${indent}${indent}y: ${Number(el.position.y.toFixed ? el.position.y.toFixed(2) : el.position.y)}`);
+        if (el.icon) yamlLines.push(`${indent}${indent}icon: ${el.icon}`);
+        if (el.label) yamlLines.push(`${indent}${indent}label: "${el.label}"`);
+        if (el.entity) yamlLines.push(`${indent}${indent}entity: ${el.entity}`);
+        if (el.content) yamlLines.push(`${indent}${indent}content: "${el.content}"`);
+        if (el.type === 'link' && el.size !== 40) yamlLines.push(`${indent}${indent}size: ${el.size}`);
+        if (el.show_background === false) yamlLines.push(`${indent}${indent}show_background: false`);
+        if (el.type === 'sensor') {
+          if (el.prefix) yamlLines.push(`${indent}${indent}prefix: "${el.prefix}"`);
+          if (el.suffix !== null) yamlLines.push(`${indent}${indent}suffix: "${el.suffix}"`);
+          if (!el.show_icon) yamlLines.push(`${indent}${indent}show_icon: false`);
+        }
+        const writeAction = (key, action) => {
+          if (!action || action.action === 'none') return;
+          yamlLines.push(`${indent}${indent}${key}:`);
+          yamlLines.push(`${indent}${indent}${indent}action: ${action.action}`);
+          if (action.navigation_path) yamlLines.push(`${indent}${indent}${indent}navigation_path: ${action.navigation_path}`);
+          if (action.url_path) yamlLines.push(`${indent}${indent}${indent}url_path: ${action.url_path}`);
+          if (action.entity) yamlLines.push(`${indent}${indent}${indent}entity: ${action.entity}`);
+          if (action.service) yamlLines.push(`${indent}${indent}${indent}service: ${action.service}`);
+        };
+        writeAction('tap_action', el.tap_action);
+        writeAction('hold_action', el.hold_action);
+        writeAction('double_tap_action', el.double_tap_action);
+        if (el.style && Object.keys(el.style).length) {
+          yamlLines.push(`${indent}${indent}style:`);
+          Object.entries(el.style).forEach(([key, val]) => {
+            yamlLines.push(`${indent}${indent}${indent}${key}: ${typeof val === 'string' ? `"${val}"` : val}`);
+          });
+        }
+      });
+    }
+
+    return `${yamlLines.join('\n')}\n`;
+  }
+
+  // Approximate card size for Lovelace masonry layout. 50px per row of canvas
+  // height + 1 row for the controls area.
+  getCardSize() {
+    const h = (this._config && this._config.canvas_height) || 450;
+    return Math.max(3, Math.ceil(h / 50) + 1);
+  }
+  // Hint to the modern grid/sections layout: full-width works best because
+  // the card has its own internal layout and controls.
+  getLayoutOptions() {
+    return { grid_columns: 4, grid_rows: 'auto', grid_min_columns: 2 };
+  }
+  static getConfigElement() {
+    return document.createElement('spatial-light-color-card-editor');
+  }
+  static getStubConfig(hass, entities) {
+    const lights = Array.isArray(entities)
+      ? entities.filter(e => typeof e === 'string' && e.startsWith('light.')).slice(0, 3)
+      : [];
+    return {
+      entities: lights, positions: {}, title: '',
+      canvas_height: 450, grid_size: 25, label_mode: 'smart',
+      always_show_controls: false, controls_below: true,
+      default_entity: null, show_entity_icons: true, icon_style: 'mdi',
+      light_size: 56, icon_only_mode: false, size_overrides: {}, icon_only_overrides: {},
+      icon_rotation: 0, icon_rotation_overrides: {}, icon_mirror: 'none', icon_mirror_overrides: {},
+      // Aligned with `setConfig` defaults so removing the field from YAML doesn't
+      // visually change the card's appearance.
+      switch_on_color: '#ffa500', switch_off_color: '#3a3a3a', scene_color: '#6366f1',
+      binary_sensor_on_color: '#4caf50', binary_sensor_off_color: '#2a2a2a',
+      color_presets: [],
+      show_live_colors: false,
+      canvas_elements: [],
+    };
+  }
+}
+
+/** ---------- Visual Card Editor ---------- */
+class SpatialLightColorCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+    this._config = {};
+    this._hass = null;
+    this._configFromEditor = false;
+    this._editorId = Math.random().toString(36).substr(2, 9);
+    this._expandedEntity = null;
+    this._expandedCanvasElement = null;
+    this._boundPositionHandler = null;
+    this._haElementsLoaded = false;
+    this._positionHistory = [];
+    this._positionRedoStack = [];
+    this._boundEditorKeyDown = null;
+    this._ceIdCounter = 0;
+    this._collapsedSections = null; // Track section collapsed state across re-renders
+  }
+
+  async connectedCallback() {
+    this._boundPositionHandler = (e) => {
+      if (e.detail && e.detail.editorId === this._editorId) {
+        if (e.detail.positions) {
+          this._pushPositionHistory();
+          if (!this._config.positions) this._config.positions = {};
+          this._config.positions = e.detail.positions;
+        }
+        // Also handle canvas element position changes from drag
+        if (e.detail.canvas_elements && Array.isArray(e.detail.canvas_elements)) {
+          this._config.canvas_elements = e.detail.canvas_elements;
+        }
+        this._fireConfigChanged();
+      }
+    };
+    window.addEventListener('spatial-card-positions-changed', this._boundPositionHandler);
+
+    this._boundEditorKeyDown = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        if (this._positionHistory.length > 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          this._undoPositions();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'Z' && e.shiftKey) || (e.key === 'z' && e.shiftKey))) {
+        if (this._positionRedoStack.length > 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          this._redoPositions();
+        }
+      }
+    };
+    // Use capture so we intercept before the card's own handler
+    window.addEventListener('keydown', this._boundEditorKeyDown, true);
+
+    // Force HA to load lazy custom elements (ha-entity-picker, ha-switch, etc.)
+    if (!this._haElementsLoaded) {
+      await this._loadHAElements();
+      this._haElementsLoaded = true;
+      // Re-render now that elements are available
+      if (this._config.entities) {
+        this._render();
+      }
+    }
+  }
+
+  async _loadHAElements() {
+    // ha-entity-picker and ha-switch are lazy-loaded by HA.
+    // We must trigger their loading before we can use them.
+    if (!customElements.get('ha-entity-picker')) {
+      // Method 1: loadCardHelpers (most reliable)
+      try {
+        if (window.loadCardHelpers) {
+          const helpers = await window.loadCardHelpers();
+          if (helpers) {
+            // Creating an entities card element forces HA to load ha-entity-picker
+            const card = await helpers.createCardElement({ type: 'entities', entities: [] });
+            if (card) {
+              // Trigger the card to load its editor elements
+              await card.constructor?.getConfigElement?.();
+            }
+          }
+        }
+      } catch (_) { /* ignore */ }
+
+      // Method 2: Wait for custom element to be defined (with timeout)
+      if (!customElements.get('ha-entity-picker')) {
+        try {
+          await Promise.race([
+            customElements.whenDefined('ha-entity-picker'),
+            new Promise(resolve => setTimeout(resolve, 3000)),
+          ]);
+        } catch (_) { /* ignore */ }
+      }
+    }
+
+    // ha-picture-upload is lazy-loaded. Trigger loading by briefly mounting
+    // a ha-form with a media selector, which imports ha-picture-upload as a dependency.
+    if (!customElements.get('ha-picture-upload')) {
+      try {
+        const form = document.createElement('ha-form');
+        form.schema = [{ name: '_', selector: { media: { image_upload: true } } }];
+        form.data = {};
+        form.computeLabel = () => '';
+        if (this._hass) form.hass = this._hass;
+        form.style.display = 'none';
+        this.shadowRoot.appendChild(form);
+        await Promise.race([
+          customElements.whenDefined('ha-picture-upload'),
+          new Promise(resolve => setTimeout(resolve, 5000)),
+        ]);
+        form.remove();
+      } catch (_) { /* ignore */ }
+    }
+  }
+
+  disconnectedCallback() {
+    if (this._boundPositionHandler) {
+      window.removeEventListener('spatial-card-positions-changed', this._boundPositionHandler);
+      this._boundPositionHandler = null;
+    }
+    if (this._boundEditorKeyDown) {
+      window.removeEventListener('keydown', this._boundEditorKeyDown, true);
+      this._boundEditorKeyDown = null;
+    }
+    this._positionHistory = [];
+    this._positionRedoStack = [];
+    if (this._config._edit_positions) {
+      delete this._config._edit_positions;
+      delete this._config._editor_id;
+      this._fireConfigChanged();
+    }
+  }
+
+  set hass(hass) {
+    const hadHass = !!this._hass;
+    this._hass = hass;
+    this._setupEntityPickers();
+    // Re-render when hass first becomes available so effect dropdowns populate
+    if (!hadHass && hass && this._config.entities) {
+      this._render();
+    }
+  }
+
+  _ensureCanvasElementIds() {
+    const els = this._config.canvas_elements;
+    if (!Array.isArray(els)) return;
+    // Find the highest existing numeric suffix to set the counter above it
+    const existingIds = new Set();
+    for (const el of els) {
+      if (el && el.id) {
+        existingIds.add(el.id);
+        const m = /^canvas_el_(\d+)$/.exec(el.id);
+        if (m) {
+          const n = parseInt(m[1], 10) + 1;
+          if (n > this._ceIdCounter) this._ceIdCounter = n;
+        }
+      }
+    }
+    // Assign IDs to elements that don't have one
+    for (const el of els) {
+      if (el && !el.id) {
+        el.id = this._generateCanvasElementId(existingIds);
+      }
+    }
+  }
+
+  _generateCanvasElementId(existingIds) {
+    if (!existingIds) {
+      existingIds = new Set();
+      const els = this._config.canvas_elements;
+      if (Array.isArray(els)) {
+        for (const el of els) {
+          if (el && el.id) existingIds.add(el.id);
+        }
+      }
+    }
+    let id;
+    do {
+      id = `canvas_el_${this._ceIdCounter++}`;
+    } while (existingIds.has(id));
+    existingIds.add(id);
+    return id;
+  }
+
+  setConfig(config) {
+    this._config = JSON.parse(JSON.stringify(config));
+    this._ensureCanvasElementIds();
+    if (this._configFromEditor) {
+      this._configFromEditor = false;
+      return;
+    }
+    this._render();
+  }
+
+  /**
+   * Parse custom shape text from a textarea into [[angle, radius], ...] array.
+   * Accepts one "angle, radius" pair per line. Returns null if fewer than 3 valid points.
+   */
+  _parseCustomShapeText(text) {
+    if (!text || !text.trim()) return null;
+    const points = [];
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) continue;
+      const parts = trimmed.split(/[\s,]+/);
+      if (parts.length >= 2) {
+        const angle = Number(parts[0]);
+        const radius = Number(parts[1]);
+        if (Number.isFinite(angle) && Number.isFinite(radius)) {
+          points.push([((angle % 360) + 360) % 360, Math.max(0, Math.min(2, radius))]);
+        }
+      }
+    }
+    return points.length >= 3 ? points : null;
+  }
+
+  _fireConfigChanged() {
+    this._configFromEditor = true;
+    const config = JSON.parse(JSON.stringify(this._config));
+    // Clean effect_presets: omit empty default values for clean YAML
+    if (Array.isArray(config.effect_presets)) {
+      config.effect_presets = config.effect_presets.map(ep => {
+        const clean = { effect: ep.effect, icon: ep.icon };
+        if (Array.isArray(ep.lights) && ep.lights.length > 0) clean.lights = ep.lights;
+        if (ep.filter_default) clean.filter_default = ep.filter_default;
+        if (ep.filter_selected) clean.filter_selected = ep.filter_selected;
+        return clean;
+      });
+    }
+    this.dispatchEvent(new CustomEvent('config-changed', {
+      detail: { config },
+      bubbles: true,
+      composed: true,
+    }));
+    requestAnimationFrame(() => { this._configFromEditor = false; });
+  }
+
+  _pushPositionHistory() {
+    const snapshot = JSON.parse(JSON.stringify(this._config.positions || {}));
+    // Avoid duplicate consecutive snapshots
+    const last = this._positionHistory[this._positionHistory.length - 1];
+    if (last && JSON.stringify(last) === JSON.stringify(snapshot)) return;
+    this._positionHistory.push(snapshot);
+    // New action clears redo stack
+    this._positionRedoStack = [];
+    // Cap history at 50 entries
+    if (this._positionHistory.length > 50) this._positionHistory.shift();
+    this._updateUndoRedoButtons();
+  }
+
+  _undoPositions() {
+    if (this._positionHistory.length === 0) return;
+    // Push current state to redo stack
+    this._positionRedoStack.push(JSON.parse(JSON.stringify(this._config.positions || {})));
+    this._config.positions = this._positionHistory.pop();
+    this._fireConfigChanged();
+    this._updateUndoRedoButtons();
+  }
+
+  _redoPositions() {
+    if (this._positionRedoStack.length === 0) return;
+    // Push current state to undo stack
+    this._positionHistory.push(JSON.parse(JSON.stringify(this._config.positions || {})));
+    this._config.positions = this._positionRedoStack.pop();
+    this._fireConfigChanged();
+    this._updateUndoRedoButtons();
+  }
+
+  _updateUndoRedoButtons() {
+    if (!this.shadowRoot) return;
+    const undoBtn = this.shadowRoot.getElementById('undoPositionsBtn');
+    const redoBtn = this.shadowRoot.getElementById('redoPositionsBtn');
+    if (undoBtn) undoBtn.disabled = this._positionHistory.length === 0;
+    if (redoBtn) redoBtn.disabled = this._positionRedoStack.length === 0;
+  }
+
+  _setupEntityPickers() {
+    if (!this._hass || !this.shadowRoot) return;
+    this.shadowRoot.querySelectorAll('ha-entity-picker').forEach(picker => {
+      picker.hass = this._hass;
+      // Canvas element pickers allow all domains
+      if (!picker.hasAttribute('data-no-domain-filter') && (!picker.includeDomains || picker.includeDomains.length === 0)) {
+        picker.includeDomains = ['light', 'switch', 'scene', 'input_boolean', 'binary_sensor'];
+      }
+    });
+    // Set default entity picker value
+    const defPicker = this.shadowRoot.getElementById('cfgDefaultEntity');
+    if (defPicker) {
+      defPicker.value = this._config.default_entity || '';
+    }
+    // Set hass on background image uploader
+    if (this._bgUploadEl) {
+      this._bgUploadEl.hass = this._hass;
+    }
+  }
+
+  _initBgUpload(bgUrl) {
+    const container = this.shadowRoot?.getElementById('cfgBgImageContainer');
+    if (!container) return;
+
+    // If already created, just update value and hass
+    if (this._bgUploadEl) {
+      this._bgUploadEl.value = bgUrl || null;
+      if (this._hass) this._bgUploadEl.hass = this._hass;
+      return;
+    }
+
+    // Wait for ha-picture-upload to be defined, then create it
+    const create = () => {
+      if (this._bgUploadEl) return;
+      const el = document.createElement('ha-picture-upload');
+      el.setAttribute('select-media', '');
+      el.value = bgUrl || null;
+      if (this._hass) el.hass = this._hass;
+      el.addEventListener('change', () => {
+        const val = el.value || '';
+        if (val) {
+          if (this._config.background_image && typeof this._config.background_image === 'object') {
+            this._config.background_image.url = val;
+          } else {
+            this._config.background_image = val;
+          }
+        } else {
+          // Preserve non-URL settings (size, position, etc.) so they apply to the next picked image
+          if (this._config.background_image && typeof this._config.background_image === 'object') {
+            delete this._config.background_image.url;
+            if (Object.keys(this._config.background_image).length === 0) {
+              this._config.background_image = null;
+            }
+          } else {
+            this._config.background_image = null;
+          }
+        }
+        this._fireConfigChanged();
+      });
+      container.appendChild(el);
+      this._bgUploadEl = el;
+    };
+
+    if (customElements.get('ha-picture-upload')) {
+      create();
+    } else {
+      customElements.whenDefined('ha-picture-upload').then(create);
+    }
+  }
+
+  _getEntityName(entityId) {
+    if (this._hass && this._hass.states[entityId]) {
+      return this._hass.states[entityId].attributes.friendly_name || entityId;
+    }
+    return entityId;
+  }
+
+  _getDomainIcon(entityId) {
+    const domain = entityId.split('.')[0];
+    const map = { light: 'mdi:lightbulb', switch: 'mdi:toggle-switch', scene: 'mdi:palette', input_boolean: 'mdi:toggle-switch-outline', binary_sensor: 'mdi:eye' };
+    return map[domain] || 'mdi:help-circle';
+  }
+
+  _esc(str) {
+    return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  _editorStyles() {
+    return `
+      :host { display: block; }
+      .card-config { display: flex; flex-direction: column; gap: 16px; }
+      .section {
+        border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
+        border-radius: 8px; overflow: hidden;
+      }
+      .section-header {
+        padding: 12px 16px; background: var(--secondary-background-color, #fafafa);
+        cursor: pointer; display: flex; align-items: center;
+        justify-content: space-between; user-select: none;
+      }
+      .section-header h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--primary-text-color, #212121); }
+      .section-header .chevron {
+        transition: transform 200ms ease; color: var(--secondary-text-color, #727272); font-size: 12px;
+      }
+      .section.collapsed .section-header .chevron { transform: rotate(-90deg); }
+      .section.collapsed .section-body { display: none; }
+      .section-body { padding: 12px 16px; display: flex; flex-direction: column; gap: 12px; }
+
+      .entity-list { display: flex; flex-direction: column; gap: 4px; }
+      .entity-item {
+        border: 1px solid var(--divider-color, rgba(0,0,0,0.08));
+        border-radius: 8px; overflow: hidden;
+      }
+      .entity-item.expanded { border-color: var(--primary-color, #03a9f4); }
+      .entity-main {
+        display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px;
+        background: var(--secondary-background-color, #f5f5f5);
+        cursor: pointer;
+      }
+      .entity-main ha-icon {
+        color: var(--secondary-text-color, #727272); --mdc-icon-size: 20px; flex-shrink: 0;
+      }
+      .entity-main .entity-info { flex: 1; min-width: 0; }
+      .entity-main .entity-name {
+        font-size: 13px; color: var(--primary-text-color, #212121);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block;
+      }
+      .entity-main .entity-id {
+        font-size: 10px; color: var(--secondary-text-color, #727272);
+        font-family: monospace; white-space: nowrap; overflow: hidden;
+        text-overflow: ellipsis; display: block;
+      }
+      .entity-btn {
+        color: var(--secondary-text-color, #727272); cursor: pointer;
+        border: none; background: none; padding: 4px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        min-width: 28px; min-height: 28px; font-size: 14px; flex-shrink: 0;
+      }
+      .entity-btn:hover { background: rgba(0,0,0,0.06); }
+      .entity-btn.remove:hover { color: var(--error-color, #db4437); background: rgba(219,68,55,0.1); }
+      .entity-btn.expand { font-size: 10px; transition: transform 200ms; }
+      .entity-item.expanded .entity-btn.expand { transform: rotate(180deg); }
+
+      .entity-overrides {
+        padding: 10px 12px; display: none; flex-direction: column; gap: 10px;
+        border-top: 1px solid var(--divider-color, rgba(0,0,0,0.08));
+        background: var(--card-background-color, #fff);
+      }
+      .entity-item.expanded .entity-overrides { display: flex; }
+      .entity-overrides .override-row {
+        display: flex; align-items: center; gap: 8px;
+      }
+      .entity-overrides .override-row label {
+        font-size: 12px; color: var(--secondary-text-color, #727272);
+        min-width: 70px; flex-shrink: 0;
+      }
+      .entity-overrides .override-row input {
+        flex: 1; padding: 5px 8px; border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
+        border-radius: 4px; font-size: 13px; color: var(--primary-text-color, #212121);
+        background: var(--card-background-color, #fff); box-sizing: border-box; outline: none;
+        min-width: 0;
+      }
+      .entity-overrides .override-row input:focus { border-color: var(--primary-color, #03a9f4); }
+      .entity-overrides .override-row select {
+        flex: 1; padding: 5px 8px; border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
+        border-radius: 4px; font-size: 13px; color: var(--primary-text-color, #212121);
+        background: var(--card-background-color, #fff); box-sizing: border-box; outline: none;
+        min-width: 0;
+      }
+      .entity-overrides .override-row select:focus { border-color: var(--primary-color, #03a9f4); }
+      .entity-overrides .override-switch {
+        display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      }
+      .entity-overrides .override-switch label { min-width: unset; flex: 1; }
+      .color-preview {
+        width: 24px; height: 24px; border-radius: 4px; flex-shrink: 0;
+        border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
+      }
+
+      .add-entity-row { padding-top: 4px; }
+      .add-entity-row ha-entity-picker {
+        width: 100%; display: block;
+      }
+      .empty-entities {
+        text-align: center; padding: 20px 16px;
+        color: var(--secondary-text-color, #727272); font-size: 13px; line-height: 1.5;
+      }
+
+      .option-row {
+        display: flex; align-items: center; justify-content: space-between;
+        min-height: 40px; gap: 16px;
+      }
+      .option-row .label { font-size: 14px; color: var(--primary-text-color, #212121); flex: 1; }
+      .option-row .sublabel { font-size: 12px; color: var(--secondary-text-color, #727272); margin-top: 2px; }
+      .input-row { display: flex; flex-direction: column; gap: 4px; }
+      .input-row label { font-size: 12px; font-weight: 500; color: var(--secondary-text-color, #727272); }
+      .input-row input[type="number"],
+      .input-row input[type="text"],
+      .input-row input[type="url"],
+      .input-row input[type="color"] {
+        width: 100%; padding: 8px 12px;
+        border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
+        border-radius: 6px; font-size: 14px; color: var(--primary-text-color, #212121);
+        background: var(--card-background-color, #fff); box-sizing: border-box;
+        outline: none; transition: border-color 150ms ease;
+      }
+      .input-row input:focus { border-color: var(--primary-color, #03a9f4); }
+      .input-row select {
+        width: 100%; padding: 8px 12px;
+        border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
+        border-radius: 6px; font-size: 14px; color: var(--primary-text-color, #212121);
+        background: var(--card-background-color, #fff); box-sizing: border-box;
+        outline: none; cursor: pointer;
+      }
+      .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+      .slider-row { display: flex; align-items: center; gap: 12px; }
+      .slider-row input[type="range"] {
+        flex: 1; -webkit-appearance: none; appearance: none; height: 6px;
+        background: var(--divider-color, rgba(0,0,0,0.12)); border-radius: 3px; cursor: pointer;
+      }
+      .slider-row input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%;
+        background: var(--primary-color, #03a9f4); cursor: pointer;
+      }
+      .slider-row input[type="range"]::-moz-range-thumb {
+        width: 18px; height: 18px; border-radius: 50%;
+        background: var(--primary-color, #03a9f4); cursor: pointer; border: none;
+      }
+      .slider-value {
+        font-size: 13px; color: var(--secondary-text-color, #727272);
+        min-width: 44px; text-align: right; font-variant-numeric: tabular-nums;
+      }
+      ha-switch { --mdc-theme-secondary: var(--primary-color, #03a9f4); }
+      #cfgBgImageContainer ha-picture-upload { display: block; width: 100%; }
+
+      .edit-positions-banner {
+        padding: 10px 14px; border-radius: 8px;
+        background: color-mix(in srgb, var(--primary-color, #03a9f4) 12%, transparent);
+        border: 1px solid color-mix(in srgb, var(--primary-color, #03a9f4) 30%, transparent);
+        font-size: 12px; color: var(--primary-text-color, #212121); line-height: 1.5;
+      }
+
+      .action-btn {
+        padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500;
+        border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
+        background: var(--secondary-background-color, #fafafa);
+        color: var(--primary-text-color, #212121);
+        transition: background 150ms ease;
+      }
+      .action-btn:hover { background: var(--divider-color, rgba(0,0,0,0.06)); }
+      .action-btn:disabled { opacity: 0.4; cursor: default; pointer-events: none; }
+
+      .undo-redo-row { display: flex; gap: 8px; }
+      .undo-redo-row .action-btn { flex: 1; text-align: center; }
+
+      .color-input-row {
+        display: flex; align-items: center; gap: 8px;
+      }
+      .color-input-row input[type="color"] {
+        width: 36px; height: 36px; padding: 2px; border-radius: 6px; cursor: pointer;
+        flex-shrink: 0;
+      }
+      .color-input-row input[type="text"] {
+        flex: 1; padding: 8px 12px;
+        border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
+        border-radius: 6px; font-size: 14px; color: var(--primary-text-color, #212121);
+        background: var(--card-background-color, #fff); box-sizing: border-box;
+        outline: none; font-family: monospace;
+      }
+
+      .color-presets-list {
+        display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+      }
+      .color-preset-chip {
+        width: 28px; height: 28px; border-radius: 6px; cursor: pointer;
+        border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
+        position: relative; display: flex; align-items: center; justify-content: center;
+      }
+      .color-preset-chip:hover { opacity: 0.8; }
+      .color-preset-chip .remove-preset {
+        display: none; position: absolute; inset: 0; background: rgba(0,0,0,0.5);
+        border-radius: 6px; color: white; font-size: 14px;
+        align-items: center; justify-content: center;
+      }
+      .color-preset-chip:hover .remove-preset { display: flex; }
+      .add-preset-btn {
+        width: 28px; height: 28px; border-radius: 6px; cursor: pointer;
+        border: 1px dashed var(--divider-color, rgba(0,0,0,0.3));
+        background: transparent; color: var(--secondary-text-color, #727272);
+        display: flex; align-items: center; justify-content: center; font-size: 16px;
+      }
+      .add-preset-btn:hover { border-color: var(--primary-color, #03a9f4); color: var(--primary-color, #03a9f4); }
+
+      .effect-presets-list {
+        display: flex; flex-direction: column; gap: 6px;
+      }
+      .effect-preset-block {
+        border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
+        border-radius: 6px; background: var(--secondary-background-color, #f5f5f5);
+        overflow: hidden;
+      }
+      .effect-preset-row {
+        display: flex; align-items: center; gap: 8px;
+        padding: 6px 8px;
+      }
+      .effect-lights-row {
+        display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px;
+        padding: 4px 8px; border-top: 1px solid var(--divider-color, rgba(0,0,0,0.06));
+      }
+      .effect-lights-label {
+        font-size: 11px; color: var(--secondary-text-color, #727272); margin-right: 2px;
+      }
+      .effect-light-check {
+        display: flex; align-items: center; gap: 3px; font-size: 11px;
+        color: var(--primary-text-color, #212121); cursor: pointer; white-space: nowrap;
+      }
+      .effect-light-check input { margin: 0; cursor: pointer; }
+      .effect-lights-hint {
+        font-size: 11px; color: var(--secondary-text-color, #727272); font-style: italic;
+      }
+      .effect-filter-row {
+        display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px;
+        padding: 4px 8px; border-top: 1px solid var(--divider-color, rgba(0,0,0,0.06));
+      }
+      .effect-filter-label {
+        font-size: 11px; color: var(--secondary-text-color, #727272); margin-right: 2px;
+      }
+      .effect-filter-select {
+        padding: 2px 4px; border-radius: 4px; font-size: 11px;
+        border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
+        background: var(--card-background-color, #fff); color: var(--primary-text-color, #212121);
+      }
+      .effect-preset-row input[type="text"] {
+        flex: 1; min-width: 0; padding: 4px 8px; border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
+        border-radius: 4px; font-size: 13px; box-sizing: border-box;
+        background: var(--card-background-color, #fff); color: var(--primary-text-color, #212121);
+      }
+      .effect-preset-row .effect-icon-label {
+        font-size: 12px; color: var(--secondary-text-color, #727272); white-space: nowrap;
+      }
+      .effect-preset-row .remove-effect-preset {
+        width: 24px; height: 24px; border: none; background: transparent; cursor: pointer;
+        color: var(--secondary-text-color, #727272); font-size: 16px; border-radius: 4px;
+        display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+      }
+      .effect-preset-row .remove-effect-preset:hover {
+        background: rgba(255,0,0,0.1); color: var(--error-color, #db4437);
+      }
+      .per-light-entity-group {
+        padding: 8px; border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
+        border-radius: 8px; background: var(--secondary-background-color, #f5f5f5);
+      }
+      .per-light-entity-group + .per-light-entity-group { margin-top: 8px; }
+
+      /* Canvas element editor styles */
+      .ce-list { display: flex; flex-direction: column; gap: 4px; }
+      .ce-item {
+        border: 1px solid var(--divider-color, rgba(0,0,0,0.08));
+        border-radius: 8px; overflow: hidden;
+      }
+      .ce-item.expanded { border-color: var(--primary-color, #03a9f4); }
+      .ce-main {
+        display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px;
+        background: var(--secondary-background-color, #f5f5f5); cursor: pointer;
+      }
+      .ce-main ha-icon {
+        color: var(--secondary-text-color, #727272); --mdc-icon-size: 20px; flex-shrink: 0;
+      }
+      .ce-main .ce-info { flex: 1; min-width: 0; }
+      .ce-main .ce-name {
+        font-size: 13px; color: var(--primary-text-color, #212121);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block;
+      }
+      .ce-main .ce-type-badge {
+        font-size: 10px; color: var(--secondary-text-color, #727272);
+        text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;
+      }
+      .ce-settings {
+        padding: 10px 12px; display: none; flex-direction: column; gap: 10px;
+        border-top: 1px solid var(--divider-color, rgba(0,0,0,0.08));
+        background: var(--card-background-color, #fff);
+      }
+      .ce-item.expanded .ce-settings { display: flex; }
+      .ce-item.expanded .entity-btn.expand { transform: rotate(180deg); }
+      .ce-settings ha-entity-picker {
+        flex: 1; min-width: 0; display: block;
+      }
+      .ce-settings .override-row {
+        display: flex; align-items: center; gap: 8px;
+      }
+      .ce-settings .override-row label {
+        font-size: 12px; color: var(--secondary-text-color, #727272);
+        min-width: 70px; flex-shrink: 0;
+      }
+      .ce-settings .override-row input,
+      .ce-settings .override-row select {
+        flex: 1; padding: 5px 8px; border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
+        border-radius: 4px; font-size: 13px; color: var(--primary-text-color, #212121);
+        background: var(--card-background-color, #fff); box-sizing: border-box; outline: none;
+        min-width: 0;
+      }
+      .ce-settings .override-row input:focus,
+      .ce-settings .override-row select:focus { border-color: var(--primary-color, #03a9f4); }
+      .ce-settings .ce-section-label {
+        font-size: 11px; font-weight: 600; color: var(--secondary-text-color, #727272);
+        text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px;
+        padding-bottom: 2px; border-bottom: 1px solid var(--divider-color, rgba(0,0,0,0.06));
+      }
+      .add-ce-row { display: flex; gap: 6px; }
+      .add-ce-btn {
+        flex: 1; padding: 8px 12px; border-radius: 6px; cursor: pointer;
+        font-size: 12px; font-weight: 500; text-align: center;
+        border: 1px dashed var(--divider-color, rgba(0,0,0,0.2));
+        background: transparent; color: var(--primary-text-color, #212121);
+        transition: border-color 150ms ease, background 150ms ease;
+      }
+      .add-ce-btn:hover {
+        border-color: var(--primary-color, #03a9f4);
+        background: color-mix(in srgb, var(--primary-color, #03a9f4) 6%, transparent);
+      }
+
+      /* Wall list styles */
+      .wall-list { display: flex; flex-direction: column; gap: 4px; }
+      .wall-item {
+        border: 1px solid var(--divider-color, rgba(0,0,0,0.08));
+        border-radius: 8px; overflow: hidden;
+      }
+      .wall-main {
+        display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px;
+        background: var(--secondary-background-color, #f5f5f5);
+      }
+      .wall-type {
+        font-size: 10px; font-weight: 600; text-transform: uppercase;
+        letter-spacing: 0.5px; color: var(--secondary-text-color, #727272);
+        min-width: 30px;
+      }
+      .wall-summary {
+        flex: 1; font-size: 12px; font-family: monospace;
+        color: var(--primary-text-color, #212121);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .wall-fields {
+        padding: 8px 12px; display: flex; flex-direction: column; gap: 8px;
+        border-top: 1px solid var(--divider-color, rgba(0,0,0,0.08));
+        background: var(--card-background-color, #fff);
+      }
+      .wall-fields .override-row {
+        display: flex; align-items: center; gap: 8px;
+      }
+      .wall-fields .override-row label {
+        font-size: 12px; color: var(--secondary-text-color, #727272);
+        min-width: 50px; flex-shrink: 0;
+      }
+      .wall-fields .override-row input {
+        flex: 1; padding: 5px 8px; border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
+        border-radius: 4px; font-size: 13px; color: var(--primary-text-color, #212121);
+        background: var(--card-background-color, #fff); box-sizing: border-box; outline: none;
+        min-width: 0;
+      }
+      .wall-fields .override-row input:focus { border-color: var(--primary-color, #03a9f4); }
+
+      /* Custom CSS textarea */
+      .custom-css-textarea {
+        width: 100%; padding: 8px 12px;
+        border: 1px solid var(--divider-color, rgba(0,0,0,0.12));
+        border-radius: 6px; font-size: 13px; font-family: monospace;
+        color: var(--primary-text-color, #212121);
+        background: var(--card-background-color, #fff);
+        box-sizing: border-box; outline: none; resize: vertical; min-height: 80px;
+        transition: border-color 150ms ease; line-height: 1.5;
+      }
+      .custom-css-textarea:focus { border-color: var(--primary-color, #03a9f4); }
+
+      /* Glow override subsection in entity settings */
+      .entity-overrides .override-subsection {
+        font-size: 11px; font-weight: 600; color: var(--secondary-text-color, #727272);
+        text-transform: uppercase; letter-spacing: 0.5px; margin-top: 6px;
+        padding-bottom: 2px; border-bottom: 1px solid var(--divider-color, rgba(0,0,0,0.06));
+      }
+    `;
+  }
+
+  _renderEntityItem(entity, index) {
+    const isExpanded = this._expandedEntity === entity;
+    const name = this._getEntityName(entity);
+    const icon = this._getDomainIcon(entity);
+
+    const labelOverride = (this._config.label_overrides && this._config.label_overrides[entity]) || '';
+    const sizeOverride = (this._config.size_overrides && this._config.size_overrides[entity]) || '';
+    const colorOverride = this._config.color_overrides && this._config.color_overrides[entity];
+    const colorOn = typeof colorOverride === 'string' ? colorOverride : (colorOverride && (colorOverride.state_on || colorOverride.on) ? (colorOverride.state_on || colorOverride.on) : '');
+    const colorOff = typeof colorOverride === 'object' && colorOverride ? (colorOverride.state_off || colorOverride.off || '') : '';
+    const iconOnlyOverride = this._config.icon_only_overrides && this._config.icon_only_overrides[entity];
+    const iconOnlyChecked = iconOnlyOverride !== undefined ? iconOnlyOverride : false;
+    const hasIconOnlyOverride = iconOnlyOverride !== undefined;
+    const rotationOverride = (this._config.icon_rotation_overrides && this._config.icon_rotation_overrides[entity] !== undefined) ? this._config.icon_rotation_overrides[entity] : '';
+    const mirrorOverride = (this._config.icon_mirror_overrides && this._config.icon_mirror_overrides[entity]) || '';
+    const glowOverride = (this._config.glow_overrides && this._config.glow_overrides[entity]) || {};
+    const glowOverrideEnabled = glowOverride.enabled === true;
+    const glowOverrideShape = glowOverride.shape || '';
+    const glowOverrideDirection = glowOverride.direction != null ? glowOverride.direction : '';
+    const glowOverrideIntensity = glowOverride.intensity != null ? glowOverride.intensity : '';
+    const styleOverride = (this._config.style_overrides && this._config.style_overrides[entity]) || '';
+
+    return `
+      <div class="entity-item ${isExpanded ? 'expanded' : ''}" data-entity="${this._esc(entity)}" data-index="${index}">
+        <div class="entity-main">
+          <ha-icon icon="${this._esc(icon)}"></ha-icon>
+          <div class="entity-info">
+            <span class="entity-name" data-entity="${entity}">${this._esc(name)}</span>
+            <span class="entity-id">${entity}</span>
+          </div>
+          <button class="entity-btn expand" data-index="${index}" title="Entity settings">&#9660;</button>
+          <button class="entity-btn remove" data-index="${index}" title="Remove">&times;</button>
+        </div>
+        <div class="entity-overrides">
+          <div class="override-row">
+            <label>Label</label>
+            <input type="text" data-entity="${entity}" data-key="label" value="${this._esc(labelOverride)}" placeholder="Auto">
+          </div>
+          <div class="override-row">
+            <label>Size (px)</label>
+            <input type="number" data-entity="${entity}" data-key="size" value="${sizeOverride}" placeholder="${this._config.light_size || 56}" min="16" max="200">
+          </div>
+          <div class="override-row">
+            <label>Color (on)</label>
+            <input type="text" data-entity="${entity}" data-key="color_on" value="${this._esc(colorOn)}" placeholder="#hex or empty">
+            <div class="color-preview" data-entity="${entity}" data-state="on" style="background:${colorOn || 'transparent'};"></div>
+          </div>
+          <div class="override-row">
+            <label>Color (off)</label>
+            <input type="text" data-entity="${entity}" data-key="color_off" value="${this._esc(colorOff)}" placeholder="#hex or empty">
+            <div class="color-preview" data-entity="${entity}" data-state="off" style="background:${colorOff || 'transparent'};"></div>
+          </div>
+          <div class="override-row">
+            <label>Rotation (°)</label>
+            <input type="number" data-entity="${entity}" data-key="icon_rotation" value="${rotationOverride}" placeholder="Global (${this._config.icon_rotation || 0})" min="0" max="360" step="1">
+          </div>
+          <div class="override-row">
+            <label>Mirror</label>
+            <select data-entity="${entity}" data-key="icon_mirror">
+              <option value=""${mirrorOverride === '' ? ' selected' : ''}>Global (${this._config.icon_mirror || 'none'})</option>
+              <option value="none"${mirrorOverride === 'none' ? ' selected' : ''}>None</option>
+              <option value="horizontal"${mirrorOverride === 'horizontal' ? ' selected' : ''}>Horizontal</option>
+              <option value="vertical"${mirrorOverride === 'vertical' ? ' selected' : ''}>Vertical</option>
+              <option value="both"${mirrorOverride === 'both' ? ' selected' : ''}>Both</option>
+            </select>
+          </div>
+          <div class="override-switch">
+            <label>Icon-only override</label>
+            <ha-switch data-entity="${entity}" data-key="iconOnly" ${hasIconOnlyOverride && iconOnlyChecked ? 'checked' : ''}></ha-switch>
+          </div>
+          <div class="override-subsection">Glow Override</div>
+          <div class="override-switch">
+            <label>Enable glow</label>
+            <ha-switch data-entity="${entity}" data-key="glowEnabled" ${glowOverrideEnabled ? 'checked' : ''}></ha-switch>
+          </div>
+          <div class="override-row">
+            <label>Shape</label>
+            <select data-entity="${entity}" data-key="glowShape">
+              <option value=""${!glowOverrideShape ? ' selected' : ''}>Global (${(this._config.glow && this._config.glow.shape) || 'cone'})</option>
+              <option value="cone"${glowOverrideShape === 'cone' ? ' selected' : ''}>Cone</option>
+              <option value="semicone"${glowOverrideShape === 'semicone' ? ' selected' : ''}>Semicone</option>
+              <option value="round"${glowOverrideShape === 'round' ? ' selected' : ''}>Round</option>
+              <option value="oval"${glowOverrideShape === 'oval' ? ' selected' : ''}>Oval</option>
+              <option value="beam"${glowOverrideShape === 'beam' ? ' selected' : ''}>Beam</option>
+              <option value="spotlight"${glowOverrideShape === 'spotlight' ? ' selected' : ''}>Spotlight</option>
+              <option value="bar"${glowOverrideShape === 'bar' ? ' selected' : ''}>Bar</option>
+              <option value="custom"${glowOverrideShape === 'custom' ? ' selected' : ''}>Custom</option>
+            </select>
+          </div>
+          <div class="override-row" data-entity="${entity}" data-key="glowCustomShapeRow" style="display:${glowOverrideShape === 'custom' ? 'flex' : 'none'};">
+            <label>Custom Shape</label>
+            <textarea data-entity="${entity}" data-key="glowCustomShape" class="custom-css-textarea" rows="3" placeholder="angle, radius&#10;0, 1&#10;90, 0.6&#10;180, 1">${glowOverride.custom_shape ? glowOverride.custom_shape.map(p => p[0] + ', ' + p[1]).join('\n') : ''}</textarea>
+          </div>
+          <div class="override-row">
+            <label>Direction (°)</label>
+            <input type="number" data-entity="${entity}" data-key="glowDirection" value="${glowOverrideDirection}" placeholder="Global (${(this._config.glow && this._config.glow.direction) || 0})" min="0" max="360" step="5">
+          </div>
+          <div class="override-row">
+            <label>Intensity</label>
+            <input type="number" data-entity="${entity}" data-key="glowIntensity" value="${glowOverrideIntensity}" placeholder="Global" min="0" max="1" step="0.05">
+          </div>
+          <div class="override-subsection">Style Override</div>
+          <div class="override-row">
+            <label>Custom CSS</label>
+            <input type="text" data-entity="${entity}" data-key="styleOverride" value="${this._esc(styleOverride)}" placeholder="e.g. filter: blur(2px);">
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderWallItem(wall, index) {
+    const isArray = Array.isArray(wall);
+    const isBox = !isArray && wall && typeof wall === 'object' &&
+      wall.x != null && wall.y != null && wall.width != null && wall.height != null;
+    const typeLabel = isBox ? 'Box' : 'Line';
+
+    // Coerce every interpolated value to a finite number (or 0). The raw config
+    // could contain anything — strings, HTML, etc. — and these values are
+    // interpolated into both attribute values and inline text.
+    const num = (v) => {
+      const n = typeof v === 'number' ? v : parseFloat(v);
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    let summary, vals;
+    if (isArray) {
+      vals = { x1: num(wall[0]), y1: num(wall[1]), x2: num(wall[2]), y2: num(wall[3]) };
+      summary = `(${vals.x1}, ${vals.y1}) → (${vals.x2}, ${vals.y2})`;
+    } else if (isBox) {
+      vals = { x: num(wall.x), y: num(wall.y), width: num(wall.width), height: num(wall.height) };
+      summary = `x:${vals.x} y:${vals.y} ${vals.width}×${vals.height}`;
+    } else {
+      vals = { x1: num(wall && wall.x1), y1: num(wall && wall.y1), x2: num(wall && wall.x2), y2: num(wall && wall.y2) };
+      summary = `(${vals.x1}, ${vals.y1}) → (${vals.x2}, ${vals.y2})`;
+    }
+
+    return `
+      <div class="wall-item" data-wall-index="${index}">
+        <div class="wall-main">
+          <span class="wall-type">${typeLabel}</span>
+          <span class="wall-summary">${summary}</span>
+          <button class="entity-btn remove" data-wall-index="${index}" title="Remove">&times;</button>
+        </div>
+        <div class="wall-fields">
+          ${isBox ? `
+            <div class="two-col">
+              <div class="override-row"><label>X (%)</label><input type="number" data-wall-index="${index}" data-wall-key="x" value="${vals.x}" step="1"></div>
+              <div class="override-row"><label>Y (%)</label><input type="number" data-wall-index="${index}" data-wall-key="y" value="${vals.y}" step="1"></div>
+            </div>
+            <div class="two-col">
+              <div class="override-row"><label>Width</label><input type="number" data-wall-index="${index}" data-wall-key="width" value="${vals.width}" step="1"></div>
+              <div class="override-row"><label>Height</label><input type="number" data-wall-index="${index}" data-wall-key="height" value="${vals.height}" step="1"></div>
+            </div>
+          ` : `
+            <div class="two-col">
+              <div class="override-row"><label>X1 (%)</label><input type="number" data-wall-index="${index}" data-wall-key="x1" value="${vals.x1}" step="1"></div>
+              <div class="override-row"><label>Y1 (%)</label><input type="number" data-wall-index="${index}" data-wall-key="y1" value="${vals.y1}" step="1"></div>
+            </div>
+            <div class="two-col">
+              <div class="override-row"><label>X2 (%)</label><input type="number" data-wall-index="${index}" data-wall-key="x2" value="${vals.x2}" step="1"></div>
+              <div class="override-row"><label>Y2 (%)</label><input type="number" data-wall-index="${index}" data-wall-key="y2" value="${vals.y2}" step="1"></div>
+            </div>
+          `}
+        </div>
+      </div>
+    `;
+  }
+
+  _renderCanvasElementItem(el, index) {
+    const isExpanded = this._expandedCanvasElement === el.id;
+    const typeIcons = { link: 'mdi:link', sensor: 'mdi:eye', template: 'mdi:code-braces' };
+    const icon = el.icon || typeIcons[el.type] || 'mdi:shape';
+    const name = el.label || el.entity || el.id;
+    const s = el.style || {};
+
+    // Build action option HTML helper
+    const actionSelect = (key, action) => {
+      const a = action || { action: 'none' };
+      return `
+        <div class="override-row">
+          <label>${key === 'tap_action' ? 'Tap' : key === 'hold_action' ? 'Hold' : 'Double-tap'}</label>
+          <select data-ce-index="${index}" data-ce-key="${key}.action">
+            <option value="none"${a.action === 'none' ? ' selected' : ''}>None</option>
+            <option value="navigate"${a.action === 'navigate' ? ' selected' : ''}>Navigate</option>
+            <option value="url"${a.action === 'url' ? ' selected' : ''}>URL</option>
+            <option value="more-info"${a.action === 'more-info' ? ' selected' : ''}>More Info</option>
+            <option value="call-service"${a.action === 'call-service' ? ' selected' : ''}>Call Service</option>
+            <option value="toggle"${a.action === 'toggle' ? ' selected' : ''}>Toggle</option>
+          </select>
+        </div>
+        ${a.action === 'navigate' ? `<div class="override-row"><label>Path</label><input type="text" data-ce-index="${index}" data-ce-key="${key}.navigation_path" value="${this._esc(a.navigation_path || '')}" placeholder="/lovelace/0"></div>` : ''}
+        ${a.action === 'url' ? `<div class="override-row"><label>URL</label><input type="text" data-ce-index="${index}" data-ce-key="${key}.url_path" value="${this._esc(a.url_path || '')}" placeholder="https://..."></div>` : ''}
+        ${a.action === 'more-info' || a.action === 'toggle' ? `<div class="override-row"><label>Entity</label><ha-entity-picker class="ce-entity-picker" data-ce-index="${index}" data-ce-key="${key}.entity" data-no-domain-filter allow-custom-entity></ha-entity-picker></div>` : ''}
+        ${a.action === 'call-service' ? `<div class="override-row"><label>Service</label><input type="text" data-ce-index="${index}" data-ce-key="${key}.service" value="${this._esc(a.service || '')}" placeholder="light.turn_on"></div>` : ''}
+      `;
+    };
+
+    return `
+      <div class="ce-item ${isExpanded ? 'expanded' : ''}" data-ce-id="${this._esc(el.id)}" data-ce-index="${index}">
+        <div class="ce-main">
+          <ha-icon icon="${this._esc(icon)}"></ha-icon>
+          <div class="ce-info">
+            <span class="ce-name">${this._esc(name)}</span>
+            <span class="ce-type-badge">${el.type}</span>
+          </div>
+          <button class="entity-btn expand" data-ce-index="${index}" title="Settings">&#9660;</button>
+          <button class="entity-btn remove" data-ce-index="${index}" title="Remove">&times;</button>
+        </div>
+        <div class="ce-settings">
+          ${el.type === 'link' ? `
+            <div class="override-row">
+              <label>Icon</label>
+              <input type="text" data-ce-index="${index}" data-ce-key="icon" value="${this._esc(el.icon || '')}" placeholder="mdi:link">
+            </div>
+            <div class="override-row">
+              <label>Label</label>
+              <input type="text" data-ce-index="${index}" data-ce-key="label" value="${this._esc(el.label || '')}" placeholder="Optional">
+            </div>
+            <div class="override-row">
+              <label>Size (px)</label>
+              <input type="number" data-ce-index="${index}" data-ce-key="size" value="${el.size || 40}" min="20" max="100">
+            </div>
+          ` : ''}
+          ${el.type === 'sensor' ? `
+            <div class="override-row">
+              <label>Entity</label>
+              <ha-entity-picker class="ce-entity-picker" data-ce-index="${index}" data-ce-key="entity" data-no-domain-filter allow-custom-entity></ha-entity-picker>
+            </div>
+            <div class="override-row">
+              <label>Label</label>
+              <input type="text" data-ce-index="${index}" data-ce-key="label" value="${this._esc(el.label || '')}" placeholder="Auto (friendly name)">
+            </div>
+            <div class="override-row">
+              <label>Prefix</label>
+              <input type="text" data-ce-index="${index}" data-ce-key="prefix" value="${this._esc(el.prefix || '')}" placeholder="None">
+            </div>
+            <div class="override-row">
+              <label>Suffix</label>
+              <input type="text" data-ce-index="${index}" data-ce-key="suffix" value="${this._esc(el.suffix != null ? el.suffix : '')}" placeholder="Auto (unit)">
+            </div>
+            <div class="override-row">
+              <label>Show icon</label>
+              <ha-switch class="ce-show-icon-switch" data-ce-index="${index}" ${el.show_icon !== false ? 'checked' : ''}></ha-switch>
+            </div>
+            <div class="override-row">
+              <label>Icon</label>
+              <input type="text" data-ce-index="${index}" data-ce-key="icon" value="${this._esc(el.icon || '')}" placeholder="Auto (entity icon)">
+            </div>
+          ` : ''}
+          ${el.type === 'template' ? `
+            <div class="override-row">
+              <label>Template</label>
+              <input type="text" data-ce-index="${index}" data-ce-key="content" value="${this._esc(el.content || '')}" placeholder="{{ states('sensor.xxx') }}">
+            </div>
+            <div class="override-row">
+              <label>Label</label>
+              <input type="text" data-ce-index="${index}" data-ce-key="label" value="${this._esc(el.label || '')}" placeholder="Optional">
+            </div>
+            <div class="override-row">
+              <label>Icon</label>
+              <input type="text" data-ce-index="${index}" data-ce-key="icon" value="${this._esc(el.icon || '')}" placeholder="None">
+            </div>
+          ` : ''}
+          ${el.type === 'link' || el.type === 'sensor' ? `
+          <div class="override-row">
+            <label>Background</label>
+            <ha-switch class="ce-bg-switch" data-ce-index="${index}" ${el.show_background !== false ? 'checked' : ''}></ha-switch>
+          </div>` : ''}
+          <div class="ce-section-label">Style</div>
+          <div class="override-row">
+            <label>Color</label>
+            <input type="text" data-ce-index="${index}" data-ce-key="style.color" value="${this._esc(s.color || '')}" placeholder="#ffffff">
+            <div class="color-preview" style="background:${s.color || 'transparent'};"></div>
+          </div>
+          <div class="override-row">
+            <label>Font size</label>
+            <input type="number" data-ce-index="${index}" data-ce-key="style.font_size" value="${s.font_size || ''}" placeholder="14" min="8" max="72">
+          </div>
+          <div class="override-row">
+            <label>Font weight</label>
+            <select data-ce-index="${index}" data-ce-key="style.font_weight">
+              <option value=""${!s.font_weight ? ' selected' : ''}>Default</option>
+              <option value="normal"${s.font_weight === 'normal' ? ' selected' : ''}>Normal</option>
+              <option value="bold"${s.font_weight === 'bold' ? ' selected' : ''}>Bold</option>
+              <option value="300"${s.font_weight === '300' ? ' selected' : ''}>Light (300)</option>
+              <option value="600"${s.font_weight === '600' ? ' selected' : ''}>Semi-bold (600)</option>
+            </select>
+          </div>
+          <div class="override-row">
+            <label>Opacity</label>
+            <input type="number" data-ce-index="${index}" data-ce-key="style.opacity" value="${s.opacity != null ? s.opacity : ''}" placeholder="1.0" min="0" max="1" step="0.1">
+          </div>
+          <div class="override-row">
+            <label>Background</label>
+            <input type="text" data-ce-index="${index}" data-ce-key="style.background" value="${this._esc(s.background || '')}" placeholder="none">
+          </div>
+          <div class="override-row">
+            <label>Border radius</label>
+            <input type="text" data-ce-index="${index}" data-ce-key="style.border_radius" value="${this._esc(s.border_radius || '')}" placeholder="e.g. 8px">
+          </div>
+          <div class="ce-section-label">Actions</div>
+          ${actionSelect('tap_action', el.tap_action)}
+          ${actionSelect('hold_action', el.hold_action)}
+          ${actionSelect('double_tap_action', el.double_tap_action)}
+        </div>
+      </div>
+    `;
+  }
+
+  _render() {
+    const config = this._config;
+    const entities = config.entities || [];
+    const editPositions = !!config._edit_positions;
+    const presets = Array.isArray(config.color_presets) ? config.color_presets : [];
+    const canvasElements = Array.isArray(config.canvas_elements) ? config.canvas_elements : [];
+    const glow = config.glow || {};
+    const glowWalls = Array.isArray(config.glow_walls) ? config.glow_walls : [];
+
+    // Save section collapsed state before re-render
+    if (this.shadowRoot.querySelector('.section')) {
+      this._collapsedSections = {};
+      this.shadowRoot.querySelectorAll('.section[id]').forEach(s => {
+        this._collapsedSections[s.id] = s.classList.contains('collapsed');
+      });
+    }
+
+    // Clear reference since innerHTML will destroy it
+    this._bgUploadEl = null;
+
+    this.shadowRoot.innerHTML = `
+      <style>${this._editorStyles()}</style>
+      <div class="card-config">
+
+        <!-- Entities Section -->
+        <div class="section" id="section-entities">
+          <div class="section-header" data-section="entities">
+            <h3>Entities</h3>
+            <span class="chevron">&#9660;</span>
+          </div>
+          <div class="section-body">
+            ${entities.length === 0
+              ? '<div class="empty-entities">No entities added yet.<br>Use the picker below to add lights, switches, or scenes.</div>'
+              : `<div class="entity-list">${entities.map((e, i) => this._renderEntityItem(e, i)).join('')}</div>`
+            }
+            <div class="add-entity-row">
+              <ha-entity-picker id="addEntityPicker" label="Add entity..."></ha-entity-picker>
+            </div>
+          </div>
+        </div>
+
+        <!-- Canvas Elements Section -->
+        <div class="section${canvasElements.length === 0 ? ' collapsed' : ''}" id="section-canvas-elements">
+          <div class="section-header" data-section="canvas-elements">
+            <h3>Canvas Elements${canvasElements.length > 0 ? ` (${canvasElements.length})` : ''}</h3>
+            <span class="chevron">&#9660;</span>
+          </div>
+          <div class="section-body">
+            ${canvasElements.length > 0
+              ? `<div class="ce-list">${canvasElements.map((el, i) => this._renderCanvasElementItem(el, i)).join('')}</div>`
+              : '<div class="empty-entities">No canvas elements. Add links, sensors, or templates to display on the canvas.</div>'
+            }
+            <div class="add-ce-row">
+              <button class="add-ce-btn" data-ce-type="link" title="Icon button with tap/hold actions">+ Link</button>
+              <button class="add-ce-btn" data-ce-type="sensor" title="Live entity state display">+ Sensor</button>
+              <button class="add-ce-btn" data-ce-type="template" title="HA template text">+ Template</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Positions Section -->
+        <div class="section" id="section-positions">
+          <div class="section-header" data-section="positions">
+            <h3>Positions</h3>
+            <span class="chevron">&#9660;</span>
+          </div>
+          <div class="section-body">
+            <div class="option-row">
+              <div>
+                <div class="label">Edit Positions</div>
+                <div class="sublabel">Drag entities on the card preview to reposition</div>
+              </div>
+              <ha-switch id="cfgEditPositions"></ha-switch>
+            </div>
+            ${editPositions ? `
+              <div class="edit-positions-banner">Position editing is active. Drag lights and canvas elements on the card preview above to reposition them. Changes are saved automatically.</div>
+              <div class="undo-redo-row">
+                <button class="action-btn" id="undoPositionsBtn" disabled title="Undo (Ctrl+Z)">&#8592; Undo</button>
+                <button class="action-btn" id="redoPositionsBtn" disabled title="Redo (Ctrl+Shift+Z)">Redo &#8594;</button>
+              </div>
+            ` : ''}
+            <button class="action-btn" id="rearrangeBtn">Rearrange All in Grid</button>
+            <button class="action-btn" id="snapToGridBtn">Snap All to Grid</button>
+          </div>
+        </div>
+
+        <!-- General Section -->
+        <div class="section" id="section-general">
+          <div class="section-header" data-section="general">
+            <h3>General</h3>
+            <span class="chevron">&#9660;</span>
+          </div>
+          <div class="section-body">
+            <div class="input-row">
+              <label for="cfgTitle">Title</label>
+              <input type="text" id="cfgTitle" placeholder="Optional card title">
+            </div>
+            <div class="two-col">
+              <div class="input-row">
+                <label for="cfgCanvasHeight">Canvas Height (px)</label>
+                <input type="number" id="cfgCanvasHeight" min="100" max="2000" step="10">
+              </div>
+              <div class="input-row">
+                <label for="cfgGridSize">Grid Size (px)</label>
+                <input type="number" id="cfgGridSize" min="5" max="100" step="5">
+              </div>
+            </div>
+            <div class="input-row">
+              <label>Background Image</label>
+              <div id="cfgBgImageContainer"></div>
+            </div>
+            <div id="bgSettingsGroup" style="display:flex;flex-direction:column;gap:12px;">
+              <div class="two-col">
+                <div class="input-row">
+                  <label for="cfgBgSize">Size</label>
+                  <select id="cfgBgSize">
+                    <option value="">Default (cover)</option>
+                    <option value="cover">Cover</option>
+                    <option value="contain">Contain</option>
+                    <option value="auto">Auto</option>
+                    <option value="100% 100%">Stretch (100% 100%)</option>
+                  </select>
+                </div>
+                <div class="input-row">
+                  <label for="cfgBgPosition">Position</label>
+                  <select id="cfgBgPosition">
+                    <option value="">Default (center)</option>
+                    <option value="center">Center</option>
+                    <option value="top">Top</option>
+                    <option value="bottom">Bottom</option>
+                    <option value="left">Left</option>
+                    <option value="right">Right</option>
+                    <option value="top left">Top Left</option>
+                    <option value="top right">Top Right</option>
+                    <option value="bottom left">Bottom Left</option>
+                    <option value="bottom right">Bottom Right</option>
+                  </select>
+                </div>
+              </div>
+              <div class="two-col">
+                <div class="input-row">
+                  <label for="cfgBgRepeat">Repeat</label>
+                  <select id="cfgBgRepeat">
+                    <option value="">Default (no-repeat)</option>
+                    <option value="no-repeat">No Repeat</option>
+                    <option value="repeat">Repeat</option>
+                    <option value="repeat-x">Repeat X</option>
+                    <option value="repeat-y">Repeat Y</option>
+                  </select>
+                </div>
+                <div class="input-row">
+                  <label for="cfgBgBlendMode">Blend Mode</label>
+                  <select id="cfgBgBlendMode">
+                    <option value="">Default (normal)</option>
+                    <option value="normal">Normal</option>
+                    <option value="multiply">Multiply</option>
+                    <option value="screen">Screen</option>
+                    <option value="overlay">Overlay</option>
+                    <option value="darken">Darken</option>
+                    <option value="lighten">Lighten</option>
+                    <option value="color-dodge">Color Dodge</option>
+                    <option value="color-burn">Color Burn</option>
+                    <option value="hard-light">Hard Light</option>
+                    <option value="soft-light">Soft Light</option>
+                    <option value="difference">Difference</option>
+                    <option value="exclusion">Exclusion</option>
+                    <option value="hue">Hue</option>
+                    <option value="saturation">Saturation</option>
+                    <option value="color">Color</option>
+                    <option value="luminosity">Luminosity</option>
+                  </select>
+                </div>
+              </div>
+              <div class="input-row">
+                <label>Opacity <span id="cfgBgOpacityValue" style="font-weight:400;">100%</span></label>
+                <div class="slider-row">
+                  <input type="range" id="cfgBgOpacity" min="0" max="100" step="1" value="100">
+                </div>
+              </div>
+            </div>
+            <div class="two-col">
+              <div class="input-row">
+                <label for="cfgLabelMode">Label Mode</label>
+                <select id="cfgLabelMode">
+                  <option value="smart">Smart</option>
+                  <option value="full">Full Name</option>
+                  <option value="initials">Initials</option>
+                  <option value="none">None</option>
+                </select>
+              </div>
+              <div class="input-row">
+                <label>Default Entity</label>
+                <ha-entity-picker id="cfgDefaultEntity" allow-custom-entity></ha-entity-picker>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Display Section -->
+        <div class="section" id="section-display">
+          <div class="section-header" data-section="display">
+            <h3>Display</h3>
+            <span class="chevron">&#9660;</span>
+          </div>
+          <div class="section-body">
+            <div class="option-row">
+              <div><div class="label">Minimal UI</div><div class="sublabel">Hide circles, show only icons</div></div>
+              <ha-switch id="cfgMinimalUI"></ha-switch>
+            </div>
+            <div class="option-row">
+              <div><div class="label">Show Entity Icons</div><div class="sublabel">Display MDI icons on light circles</div></div>
+              <ha-switch id="cfgShowIcons"></ha-switch>
+            </div>
+            <div class="option-row">
+              <div><div class="label">Icon-Only Mode</div><div class="sublabel">Show icons without filled circles</div></div>
+              <ha-switch id="cfgIconOnly"></ha-switch>
+            </div>
+            <div class="option-row">
+              <div><div class="label">Always Show Controls</div><div class="sublabel">Keep brightness/color controls visible</div></div>
+              <ha-switch id="cfgAlwaysControls"></ha-switch>
+            </div>
+            <div class="option-row">
+              <div class="label">Light Size</div>
+              <div class="slider-row" style="flex:0 0 auto;">
+                <input type="range" id="cfgLightSize" min="24" max="96" style="width:120px;">
+                <span class="slider-value" id="cfgLightSizeValue">56px</span>
+              </div>
+            </div>
+            <div class="option-row">
+              <div class="label">Icon Rotation</div>
+              <div class="slider-row" style="flex:0 0 auto;">
+                <input type="range" id="cfgIconRotation" min="0" max="360" step="1" style="width:120px;">
+                <span class="slider-value" id="cfgIconRotationValue">0°</span>
+              </div>
+            </div>
+            <div class="option-row">
+              <div><div class="label">Icon Mirror</div><div class="sublabel">Flip all icons horizontally or vertically</div></div>
+              <select id="cfgIconMirror" style="padding:6px 10px; border-radius:6px; border:1px solid var(--divider-color, rgba(0,0,0,0.12)); background:var(--card-background-color, #fff); color:var(--primary-text-color, #212121); font-size:14px;">
+                <option value="none">None</option>
+                <option value="horizontal">Horizontal</option>
+                <option value="vertical">Vertical</option>
+                <option value="both">Both</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Colors Section -->
+        <div class="section collapsed" id="section-colors">
+          <div class="section-header" data-section="colors">
+            <h3>Colors</h3>
+            <span class="chevron">&#9660;</span>
+          </div>
+          <div class="section-body">
+            <div class="input-row">
+              <label>Switch On Color</label>
+              <div class="color-input-row">
+                <input type="color" id="cfgSwitchOnColorPicker" value="${this._esc(config.switch_on_color || '#ffa500')}">
+                <input type="text" id="cfgSwitchOnColor" placeholder="#ffa500">
+              </div>
+            </div>
+            <div class="input-row">
+              <label>Switch Off Color</label>
+              <div class="color-input-row">
+                <input type="color" id="cfgSwitchOffColorPicker" value="${this._esc(config.switch_off_color || '#3a3a3a')}">
+                <input type="text" id="cfgSwitchOffColor" placeholder="#3a3a3a">
+              </div>
+            </div>
+            <div class="input-row">
+              <label>Scene Color</label>
+              <div class="color-input-row">
+                <input type="color" id="cfgSceneColorPicker" value="${this._esc(config.scene_color || '#6366f1')}">
+                <input type="text" id="cfgSceneColor" placeholder="#6366f1">
+              </div>
+            </div>
+            <div class="input-row">
+              <label>Binary Sensor On Color</label>
+              <div class="color-input-row">
+                <input type="color" id="cfgBinarySensorOnColorPicker" value="${this._esc(config.binary_sensor_on_color || '#4caf50')}">
+                <input type="text" id="cfgBinarySensorOnColor" placeholder="#4caf50">
+              </div>
+            </div>
+            <div class="input-row">
+              <label>Binary Sensor Off Color</label>
+              <div class="color-input-row">
+                <input type="color" id="cfgBinarySensorOffColorPicker" value="${this._esc(config.binary_sensor_off_color || '#2a2a2a')}">
+                <input type="text" id="cfgBinarySensorOffColor" placeholder="#2a2a2a">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Presets Section -->
+        <div class="section collapsed" id="section-presets">
+          <div class="section-header" data-section="presets">
+            <h3>Presets</h3>
+            <span class="chevron">&#9660;</span>
+          </div>
+          <div class="section-body">
+            <div class="input-row">
+              <label>Color Presets</label>
+              <div class="color-presets-list" id="colorPresetsList">
+                ${presets.map((c, i) => `
+                  <div class="color-preset-chip" data-index="${i}" style="background:${this._esc(c)};" title="${this._esc(c)}">
+                    <span class="remove-preset" data-index="${i}">&times;</span>
+                  </div>
+                `).join('')}
+                <button class="add-preset-btn" id="addPresetBtn" title="Add color preset">+</button>
+              </div>
+              <input type="color" id="presetColorPicker" style="display:none;">
+            </div>
+            <div class="option-row">
+              <div><div class="label">Show Live Colors</div><div class="sublabel">Display current light colors as presets</div></div>
+              <ha-switch id="cfgLiveColors"></ha-switch>
+            </div>
+            <div class="input-row">
+              <label>Effect Presets</label>
+              <datalist id="allEffectsList">
+                ${[...new Set(entities.flatMap(id => {
+                  const st = this._hass?.states?.[id];
+                  return (st && Array.isArray(st.attributes.effect_list)) ? st.attributes.effect_list : [];
+                }))].map(e => `<option value="${this._esc(e)}">`).join('')}
+              </datalist>
+              <div class="effect-presets-list" id="effectPresetsList">
+                ${(Array.isArray(config.effect_presets) ? config.effect_presets : []).map((ep, i) => {
+                  const epLights = Array.isArray(ep.lights) ? ep.lights : [];
+                  const fd = ep.filter_default || '';
+                  const fs = ep.filter_selected || '';
+                  return `
+                  <div class="effect-preset-block" data-index="${i}">
+                    <div class="effect-preset-row" data-index="${i}">
+                      <input type="text" class="effect-name-input" data-index="${i}" value="${this._esc(ep.effect || '')}" placeholder="Effect name" list="allEffectsList">
+                      <span class="effect-icon-label">Icon:</span>
+                      <input type="text" class="effect-icon-input" data-index="${i}" value="${this._esc(ep.icon || 'mdi:auto-fix')}" placeholder="mdi:auto-fix" style="max-width:140px;">
+                      <button class="remove-effect-preset" data-index="${i}" title="Remove">&times;</button>
+                    </div>
+                    <div class="effect-lights-row" data-index="${i}">
+                      <span class="effect-lights-label">Lights:</span>
+                      ${entities.map(id => {
+                        const checked = epLights.includes(id);
+                        const lname = this._getEntityName(id);
+                        return `<label class="effect-light-check"><input type="checkbox" class="effect-light-cb" data-index="${i}" data-entity="${this._esc(id)}"${checked ? ' checked' : ''}><span>${this._esc(lname)}</span></label>`;
+                      }).join('')}
+                      <span class="effect-lights-hint">${epLights.length === 0 ? '(all)' : ''}</span>
+                    </div>
+                    <div class="effect-filter-row" data-index="${i}">
+                      <span class="effect-filter-label">No selection: show if</span>
+                      <select class="effect-filter-select effect-filter-default" data-index="${i}" title="Visibility when no lights are tapped">
+                        <option value=""${fd === '' ? ' selected' : ''}>Global default</option>
+                        <option value="any"${fd === 'any' ? ' selected' : ''}>any light has it</option>
+                        <option value="all"${fd === 'all' ? ' selected' : ''}>all lights have it</option>
+                      </select>
+                    </div>
+                    <div class="effect-filter-row" data-index="${i}">
+                      <span class="effect-filter-label">Selection: show if</span>
+                      <select class="effect-filter-select effect-filter-selected" data-index="${i}" title="Visibility when lights are selected">
+                        <option value=""${fs === '' ? ' selected' : ''}>Global default</option>
+                        <option value="any"${fs === 'any' ? ' selected' : ''}>any selected has it</option>
+                        <option value="all"${fs === 'all' ? ' selected' : ''}>all selected have it</option>
+                      </select>
+                    </div>
+                  </div>`;
+                }).join('')}
+                <button class="add-preset-btn" id="addEffectPresetBtn" title="Add effect preset">+</button>
+              </div>
+            </div>
+            <div class="option-row">
+              <div><div class="label">Effect visibility (no selection)</div><div class="sublabel">Show effect if any or all lights on the card have it</div></div>
+              <select id="cfgEffectFilterDefault" style="padding:6px 10px; border-radius:6px; border:1px solid var(--divider-color, rgba(0,0,0,0.12)); background:var(--card-background-color, #fff); color:var(--primary-text-color, #212121); font-size:14px;">
+                <option value="any">If any light has it</option>
+                <option value="all">If all lights have it</option>
+              </select>
+            </div>
+            <div class="option-row">
+              <div><div class="label">Effect visibility (selected)</div><div class="sublabel">Show effect if any or all selected lights have it</div></div>
+              <select id="cfgEffectFilterSelected" style="padding:6px 10px; border-radius:6px; border:1px solid var(--divider-color, rgba(0,0,0,0.12)); background:var(--card-background-color, #fff); color:var(--primary-text-color, #212121); font-size:14px;">
+                <option value="any">If any selected has it</option>
+                <option value="all">If all selected have it</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Temperature Section -->
+        <div class="section collapsed" id="section-temperature">
+          <div class="section-header" data-section="temperature">
+            <h3>Temperature Range</h3>
+            <span class="chevron">&#9660;</span>
+          </div>
+          <div class="section-body">
+            <div class="two-col">
+              <div class="input-row">
+                <label for="cfgTempMin">Min Temperature (K)</label>
+                <input type="number" id="cfgTempMin" min="1000" max="10000" step="100" placeholder="Auto">
+              </div>
+              <div class="input-row">
+                <label for="cfgTempMax">Max Temperature (K)</label>
+                <input type="number" id="cfgTempMax" min="1000" max="10000" step="100" placeholder="Auto">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Layout Section -->
+        <div class="section collapsed" id="section-layout">
+          <div class="section-header" data-section="layout">
+            <h3>Layout</h3>
+            <span class="chevron">&#9660;</span>
+          </div>
+          <div class="section-body">
+            <div class="option-row">
+              <div><div class="label">Controls Below Canvas</div><div class="sublabel">Place controls below instead of floating overlay</div></div>
+              <ha-switch id="cfgControlsBelow"></ha-switch>
+            </div>
+          </div>
+        </div>
+
+        <!-- Glow Section -->
+        <div class="section${glow.enabled ? '' : ' collapsed'}" id="section-glow">
+          <div class="section-header" data-section="glow">
+            <h3>Glow</h3>
+            <span class="chevron">&#9660;</span>
+          </div>
+          <div class="section-body">
+            <div class="option-row">
+              <div><div class="label">Enable Glow</div><div class="sublabel">Show shaped glow effects behind entities</div></div>
+              <ha-switch id="cfgGlowEnabled"></ha-switch>
+            </div>
+            <div id="glowSettingsGroup" style="display:flex;flex-direction:column;gap:12px;">
+              <div class="two-col">
+                <div class="input-row">
+                  <label for="cfgGlowShape">Shape</label>
+                  <select id="cfgGlowShape">
+                    <option value="cone">Cone</option>
+                    <option value="semicone">Semicone</option>
+                    <option value="round">Round</option>
+                    <option value="oval">Oval</option>
+                    <option value="beam">Beam</option>
+                    <option value="spotlight">Spotlight</option>
+                    <option value="bar">Bar</option>
+                    <option value="custom">Custom (polar)</option>
+                  </select>
+                </div>
+                <div class="input-row">
+                  <label for="cfgGlowFalloff">Falloff</label>
+                  <select id="cfgGlowFalloff">
+                    <option value="smooth">Smooth</option>
+                    <option value="linear">Linear</option>
+                    <option value="exponential">Exponential</option>
+                    <option value="sharp">Sharp</option>
+                    <option value="uniform">Uniform</option>
+                  </select>
+                </div>
+              </div>
+              <div class="input-row" id="cfgGlowCustomShapeRow" style="display:${(glow.shape || 'cone') === 'custom' ? 'flex' : 'none'};">
+                <label for="cfgGlowCustomShape">Custom Shape</label>
+                <textarea id="cfgGlowCustomShape" class="custom-css-textarea" rows="4" placeholder="angle, radius (one per line)&#10;0, 1&#10;90, 0.6&#10;180, 1&#10;270, 0.6">${glow.custom_shape ? glow.custom_shape.map(p => p[0] + ', ' + p[1]).join('\n') : ''}</textarea>
+                <div class="sublabel" style="margin-top:2px;">Polar coords: angle° (0=down, clockwise), radius 0–1. Min 3 points.</div>
+              </div>
+              <div class="two-col">
+                <div class="input-row">
+                  <label for="cfgGlowDirection">Direction (°)</label>
+                  <input type="number" id="cfgGlowDirection" min="0" max="360" step="5" placeholder="0">
+                </div>
+                <div class="input-row">
+                  <label for="cfgGlowSpread">Spread</label>
+                  <input type="number" id="cfgGlowSpread" min="0.1" max="5" step="0.1" placeholder="1.5">
+                </div>
+              </div>
+              <div class="two-col">
+                <div class="input-row">
+                  <label for="cfgGlowLength">Length (px)</label>
+                  <input type="number" id="cfgGlowLength" min="1" max="500" step="5" placeholder="80">
+                </div>
+                <div class="input-row">
+                  <label for="cfgGlowWidth">Width (px)</label>
+                  <input type="number" id="cfgGlowWidth" min="1" max="500" step="5" placeholder="60">
+                </div>
+              </div>
+              <div class="two-col">
+                <div class="input-row">
+                  <label for="cfgGlowBlur">Blur (px)</label>
+                  <input type="number" id="cfgGlowBlur" min="0" max="100" step="1" placeholder="12">
+                </div>
+                <div class="input-row">
+                  <label for="cfgGlowColor">Color</label>
+                  <div class="color-input-row">
+                    <input type="color" id="cfgGlowColorPicker" value="#ffffff">
+                    <input type="text" id="cfgGlowColor" placeholder="Auto (entity color)">
+                  </div>
+                </div>
+              </div>
+              <div class="option-row">
+                <div class="label">Intensity <span id="cfgGlowIntensityValue" style="font-weight:400;">70%</span></div>
+                <div class="slider-row" style="flex:0 0 auto;">
+                  <input type="range" id="cfgGlowIntensity" min="0" max="100" step="1" style="width:120px;">
+                </div>
+              </div>
+              <div class="option-row">
+                <div class="label">Edge Softness <span id="cfgGlowEdgeSoftnessValue" style="font-weight:400;">0%</span></div>
+                <div class="slider-row" style="flex:0 0 auto;">
+                  <input type="range" id="cfgGlowEdgeSoftness" min="0" max="100" step="1" style="width:120px;">
+                </div>
+              </div>
+              <div class="option-row">
+                <div class="label">Start Width <span id="cfgGlowStartWidthValue" style="font-weight:400;">0%</span></div>
+                <div class="slider-row" style="flex:0 0 auto;">
+                  <input type="range" id="cfgGlowStartWidth" min="0" max="100" step="1" style="width:120px;">
+                </div>
+              </div>
+              <div class="two-col">
+                <div class="input-row">
+                  <label for="cfgGlowOffsetX">Offset X (px)</label>
+                  <input type="number" id="cfgGlowOffsetX" step="1" placeholder="0">
+                </div>
+                <div class="input-row">
+                  <label for="cfgGlowOffsetY">Offset Y (px)</label>
+                  <input type="number" id="cfgGlowOffsetY" step="1" placeholder="0">
+                </div>
+              </div>
+              <div class="option-row">
+                <div><div class="label">Scale with Brightness</div><div class="sublabel">Adjust glow opacity based on light brightness</div></div>
+                <ha-switch id="cfgGlowScaleBrightness"></ha-switch>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Glow Walls Section -->
+        <div class="section${glowWalls.length === 0 ? ' collapsed' : ''}" id="section-glow-walls">
+          <div class="section-header" data-section="glow-walls">
+            <h3>Glow Walls${glowWalls.length > 0 ? ` (${glowWalls.length})` : ''}</h3>
+            <span class="chevron">&#9660;</span>
+          </div>
+          <div class="section-body">
+            <div class="sublabel" style="margin-bottom:8px;">Line segments or boxes that block glow from expanding (like room walls).</div>
+            ${glowWalls.length > 0
+              ? `<div class="wall-list">${glowWalls.map((w, i) => this._renderWallItem(w, i)).join('')}</div>`
+              : ''
+            }
+            <div class="add-ce-row">
+              <button class="add-ce-btn" id="addWallLineBtn" title="Add a line segment wall">+ Line</button>
+              <button class="add-ce-btn" id="addWallBoxBtn" title="Add a rectangular wall (box)">+ Box</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Interaction Section -->
+        <div class="section collapsed" id="section-interaction">
+          <div class="section-header" data-section="interaction">
+            <h3>Interaction</h3>
+            <span class="chevron">&#9660;</span>
+          </div>
+          <div class="section-body">
+            <div class="option-row">
+              <div><div class="label">Single-Tap for Switches &amp; Scenes</div><div class="sublabel">Toggle switches and activate scenes with one tap</div></div>
+              <ha-switch id="cfgSwitchTap"></ha-switch>
+            </div>
+          </div>
+        </div>
+
+        <!-- Custom CSS Section -->
+        <div class="section${config.custom_css ? '' : ' collapsed'}" id="section-custom-css">
+          <div class="section-header" data-section="custom-css">
+            <h3>Custom CSS</h3>
+            <span class="chevron">&#9660;</span>
+          </div>
+          <div class="section-body">
+            <div class="input-row">
+              <label>Global Custom CSS</label>
+              <textarea id="cfgCustomCss" class="custom-css-textarea" rows="6" placeholder="/* Injected into shadow DOM */&#10;.light { ... }&#10;.light-glow { ... }"></textarea>
+            </div>
+            <div class="sublabel">CSS is injected into the card's shadow DOM. Use per-entity style overrides in each entity's settings.</div>
+          </div>
+        </div>
+
+      </div>
+    `;
+
+    this._setDOMValues();
+    this._attachEditorListeners();
+
+    // Restore section collapsed/expanded state from before re-render
+    if (this._collapsedSections) {
+      Object.entries(this._collapsedSections).forEach(([id, wasCollapsed]) => {
+        const el = this.shadowRoot.getElementById(id);
+        if (el) el.classList.toggle('collapsed', wasCollapsed);
+      });
+    }
+
+    // Setup entity pickers after DOM is ready
+    requestAnimationFrame(() => {
+      this._setupEntityPickers();
+      // Double-ensure in case custom element wasn't upgraded yet
+      setTimeout(() => this._setupEntityPickers(), 100);
+    });
+  }
+
+  _setDOMValues() {
+    const root = this.shadowRoot;
+    const c = this._config;
+
+    const setVal = (id, val) => { const el = root.getElementById(id); if (el) el.value = val; };
+    setVal('cfgTitle', c.title || '');
+    setVal('cfgCanvasHeight', c.canvas_height || 450);
+    setVal('cfgGridSize', c.grid_size || 25);
+    setVal('cfgLabelMode', c.label_mode || 'smart');
+    setVal('cfgLightSize', c.light_size || 56);
+
+    const lsv = root.getElementById('cfgLightSizeValue');
+    if (lsv) lsv.textContent = `${c.light_size || 56}px`;
+
+    setVal('cfgIconRotation', c.icon_rotation || 0);
+    const irv = root.getElementById('cfgIconRotationValue');
+    if (irv) irv.textContent = `${c.icon_rotation || 0}°`;
+    setVal('cfgIconMirror', c.icon_mirror || 'none');
+    setVal('cfgEffectFilterDefault', c.effect_filter_default || 'any');
+    setVal('cfgEffectFilterSelected', c.effect_filter_selected || 'all');
+
+    // Background image (ha-picture-upload created programmatically after lazy load)
+    let bgUrl = '';
+    if (c.background_image) {
+      bgUrl = typeof c.background_image === 'string' ? c.background_image : (c.background_image.url || '');
+    }
+    this._initBgUpload(bgUrl);
+
+    // Background image settings
+    const bgObj = (c.background_image && typeof c.background_image === 'object') ? c.background_image : {};
+    const setSelectVal = (id, val) => {
+      const el = root.getElementById(id);
+      if (!el) return;
+      const targetVal = val || '';
+      let found = false;
+      for (const opt of el.options) { if (opt.value === targetVal) { found = true; break; } }
+      if (!found && targetVal) {
+        const opt = document.createElement('option');
+        opt.value = targetVal;
+        opt.textContent = targetVal;
+        el.appendChild(opt);
+      }
+      el.value = targetVal;
+    };
+    setSelectVal('cfgBgSize', bgObj.size || '');
+    setSelectVal('cfgBgPosition', bgObj.position || '');
+    setSelectVal('cfgBgRepeat', bgObj.repeat || '');
+    setSelectVal('cfgBgBlendMode', bgObj.blend_mode || '');
+    const bgOpacityPct = bgObj.opacity !== undefined ? Math.round(bgObj.opacity * 100) : 100;
+    setVal('cfgBgOpacity', bgOpacityPct);
+    const bgOpacityLabel = root.getElementById('cfgBgOpacityValue');
+    if (bgOpacityLabel) bgOpacityLabel.textContent = `${bgOpacityPct}%`;
+
+    // Colors
+    setVal('cfgSwitchOnColor', c.switch_on_color || '#ffa500');
+    setVal('cfgSwitchOnColorPicker', c.switch_on_color || '#ffa500');
+    setVal('cfgSwitchOffColor', c.switch_off_color || '#3a3a3a');
+    setVal('cfgSwitchOffColorPicker', c.switch_off_color || '#3a3a3a');
+    setVal('cfgSceneColor', c.scene_color || '#6366f1');
+    setVal('cfgSceneColorPicker', c.scene_color || '#6366f1');
+    setVal('cfgBinarySensorOnColor', c.binary_sensor_on_color || '#4caf50');
+    setVal('cfgBinarySensorOnColorPicker', c.binary_sensor_on_color || '#4caf50');
+    setVal('cfgBinarySensorOffColor', c.binary_sensor_off_color || '#2a2a2a');
+    setVal('cfgBinarySensorOffColorPicker', c.binary_sensor_off_color || '#2a2a2a');
+
+    // Temperature
+    setVal('cfgTempMin', c.temperature_min != null ? c.temperature_min : '');
+    setVal('cfgTempMax', c.temperature_max != null ? c.temperature_max : '');
+
+    // Glow settings
+    const g = c.glow || {};
+    setVal('cfgGlowShape', g.shape || 'cone');
+    // Show/hide custom shape textarea based on shape
+    const csRow = root.getElementById('cfgGlowCustomShapeRow');
+    if (csRow) csRow.style.display = (g.shape || 'cone') === 'custom' ? 'flex' : 'none';
+    const csEl = root.getElementById('cfgGlowCustomShape');
+    if (csEl) csEl.value = g.custom_shape ? g.custom_shape.map(p => p[0] + ', ' + p[1]).join('\n') : '';
+    setVal('cfgGlowFalloff', g.falloff || 'smooth');
+    setVal('cfgGlowDirection', g.direction != null ? g.direction : '');
+    setVal('cfgGlowSpread', g.spread != null ? g.spread : '');
+    setVal('cfgGlowLength', g.length != null ? g.length : '');
+    setVal('cfgGlowWidth', g.width != null ? g.width : '');
+    setVal('cfgGlowBlur', g.blur != null ? g.blur : '');
+    setVal('cfgGlowOffsetX', g.offset_x != null ? g.offset_x : '');
+    setVal('cfgGlowOffsetY', g.offset_y != null ? g.offset_y : '');
+    const glowIntensityPct = Math.round((g.intensity != null ? g.intensity : 0.7) * 100);
+    setVal('cfgGlowIntensity', glowIntensityPct);
+    const glowIntensityLabel = root.getElementById('cfgGlowIntensityValue');
+    if (glowIntensityLabel) glowIntensityLabel.textContent = `${glowIntensityPct}%`;
+    const glowEdgePct = Math.round((g.edge_softness != null ? g.edge_softness : 0) * 100);
+    setVal('cfgGlowEdgeSoftness', glowEdgePct);
+    const glowEdgeLabel = root.getElementById('cfgGlowEdgeSoftnessValue');
+    if (glowEdgeLabel) glowEdgeLabel.textContent = `${glowEdgePct}%`;
+    const glowStartPct = Math.round((g.start_width != null ? g.start_width : 0) * 100);
+    setVal('cfgGlowStartWidth', glowStartPct);
+    const glowStartLabel = root.getElementById('cfgGlowStartWidthValue');
+    if (glowStartLabel) glowStartLabel.textContent = `${glowStartPct}%`;
+    setVal('cfgGlowColor', g.color || '');
+    if (g.color && /^#[0-9a-fA-F]{6}$/.test(g.color)) {
+      setVal('cfgGlowColorPicker', g.color);
+    }
+
+    // Custom CSS
+    const cssEl = root.getElementById('cfgCustomCss');
+    if (cssEl) cssEl.value = c.custom_css || '';
+
+    // Switches
+    const switches = {
+      cfgEditPositions: !!c._edit_positions,
+      cfgMinimalUI: c.minimal_ui || false,
+      cfgShowIcons: c.show_entity_icons !== false,
+      cfgIconOnly: c.icon_only_mode || false,
+      cfgLiveColors: c.show_live_colors || false,
+      cfgAlwaysControls: c.always_show_controls || false,
+      cfgControlsBelow: c.controls_below !== false,
+      cfgSwitchTap: c.switch_single_tap || false,
+      cfgGlowEnabled: !!(g.enabled),
+      cfgGlowScaleBrightness: g.scale_with_brightness !== false,
+    };
+    const setChecked = () => {
+      Object.entries(switches).forEach(([id, val]) => {
+        const el = root.getElementById(id);
+        if (el) el.checked = val;
+      });
+    };
+    setChecked();
+    requestAnimationFrame(() => setChecked());
+
+    // Per-entity icon-only switches
+    requestAnimationFrame(() => {
+      root.querySelectorAll('.entity-overrides ha-switch[data-key="iconOnly"]').forEach(sw => {
+        const entity = sw.dataset.entity;
+        const override = c.icon_only_overrides && c.icon_only_overrides[entity];
+        sw.checked = override !== undefined ? override : false;
+      });
+      // Per-entity glow enabled switches
+      root.querySelectorAll('.entity-overrides ha-switch[data-key="glowEnabled"]').forEach(sw => {
+        const entity = sw.dataset.entity;
+        const override = c.glow_overrides && c.glow_overrides[entity];
+        sw.checked = override ? override.enabled === true : false;
+      });
+    });
+  }
+
+  _attachEditorListeners() {
+    const root = this.shadowRoot;
+
+    // Section collapse
+    root.querySelectorAll('.section-header').forEach(h => {
+      h.addEventListener('click', () => h.closest('.section').classList.toggle('collapsed'));
+    });
+
+    // --- Edit Positions toggle ---
+    const editPosSwitch = root.getElementById('cfgEditPositions');
+    if (editPosSwitch) {
+      editPosSwitch.addEventListener('change', () => {
+        if (editPosSwitch.checked) {
+          this._config._edit_positions = true;
+          this._config._editor_id = this._editorId;
+        } else {
+          delete this._config._edit_positions;
+          delete this._config._editor_id;
+        }
+        this._fireConfigChanged();
+        this._render();
+      });
+    }
+
+    // --- Undo/Redo buttons ---
+    const undoBtn = root.getElementById('undoPositionsBtn');
+    const redoBtn = root.getElementById('redoPositionsBtn');
+    if (undoBtn) {
+      undoBtn.addEventListener('click', () => this._undoPositions());
+    }
+    if (redoBtn) {
+      redoBtn.addEventListener('click', () => this._redoPositions());
+    }
+
+    // --- Rearrange button ---
+    const rearrangeBtn = root.getElementById('rearrangeBtn');
+    if (rearrangeBtn) {
+      rearrangeBtn.addEventListener('click', () => {
+        const entities = this._config.entities || [];
+        if (entities.length === 0) return;
+        this._pushPositionHistory();
+        const cols = Math.ceil(Math.sqrt(entities.length * 1.5));
+        const rows = Math.ceil(entities.length / cols);
+        const spacing = 100 / (cols + 1);
+        const newPositions = {};
+        entities.forEach((entity, idx) => {
+          const col = idx % cols;
+          const row = Math.floor(idx / cols);
+          newPositions[entity] = {
+            x: spacing * (col + 1),
+            y: (100 / (rows + 1)) * (row + 1),
+          };
+        });
+        this._config.positions = newPositions;
+        this._fireConfigChanged();
+      });
+    }
+
+    // --- Snap to grid ---
+    const snapBtn = root.getElementById('snapToGridBtn');
+    if (snapBtn) {
+      snapBtn.addEventListener('click', () => {
+        const entities = this._config.entities || [];
+        if (entities.length === 0) return;
+        this._pushPositionHistory();
+        const positions = this._config.positions || {};
+        const gridSize = this._config.grid_size || 25;
+        const canvasHeight = this._config.canvas_height || 450;
+        // Estimate canvas width from the editor panel width, falling back to a typical card width (450px)
+        const editorWidth = root.host ? root.host.offsetWidth : 0;
+        const canvasWidth = editorWidth > 0 ? editorWidth : 450;
+        const newPositions = {};
+        entities.forEach((entity) => {
+          const pos = positions[entity];
+          if (!pos) {
+            newPositions[entity] = { x: 50, y: 50 };
+            return;
+          }
+          const px = (pos.x / 100) * canvasWidth;
+          const py = (pos.y / 100) * canvasHeight;
+          const sx = Math.round(px / gridSize) * gridSize;
+          const sy = Math.round(py / gridSize) * gridSize;
+          newPositions[entity] = {
+            x: Math.max(0, Math.min(100, (sx / canvasWidth) * 100)),
+            y: Math.max(0, Math.min(100, (sy / canvasHeight) * 100)),
+          };
+        });
+        this._config.positions = newPositions;
+        this._fireConfigChanged();
+      });
+    }
+
+    // --- Entity expand/collapse ---
+    const toggleExpand = (entityItem) => {
+      const entity = entityItem.dataset.entity;
+      this._expandedEntity = (this._expandedEntity === entity) ? null : entity;
+      root.querySelectorAll('.entity-item').forEach(item => {
+        item.classList.toggle('expanded', item.dataset.entity === this._expandedEntity);
+      });
+    };
+    root.querySelectorAll('.entity-main').forEach(main => {
+      main.addEventListener('click', (e) => {
+        if (e.target.closest('.entity-btn')) return;
+        toggleExpand(main.closest('.entity-item'));
+      });
+    });
+    root.querySelectorAll('.entity-item .entity-btn.expand').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleExpand(btn.closest('.entity-item'));
+      });
+    });
+
+    // --- Entity remove ---
+    root.querySelectorAll('.entity-item .entity-btn.remove').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const idx = parseInt(btn.dataset.index, 10);
+        const entity = this._config.entities[idx];
+        this._config.entities.splice(idx, 1);
+        if (this._config.positions) delete this._config.positions[entity];
+        if (this._config.size_overrides) delete this._config.size_overrides[entity];
+        if (this._config.icon_only_overrides) delete this._config.icon_only_overrides[entity];
+        if (this._config.label_overrides) delete this._config.label_overrides[entity];
+        if (this._config.color_overrides) delete this._config.color_overrides[entity];
+        if (this._config.icon_rotation_overrides) delete this._config.icon_rotation_overrides[entity];
+        if (this._config.icon_mirror_overrides) delete this._config.icon_mirror_overrides[entity];
+        if (this._config.glow_overrides) delete this._config.glow_overrides[entity];
+        if (this._config.style_overrides) delete this._config.style_overrides[entity];
+        if (this._expandedEntity === entity) this._expandedEntity = null;
+        this._fireConfigChanged();
+        this._render();
+      });
+    });
+
+    // --- Add entity picker ---
+    const addPicker = root.getElementById('addEntityPicker');
+    if (addPicker) {
+      // Listen on both the picker and via event delegation for value-changed
+      const handleAdd = (val) => {
+        if (val && !(this._config.entities || []).includes(val)) {
+          if (!this._config.entities) this._config.entities = [];
+          this._config.entities.push(val);
+          this._fireConfigChanged();
+          this._render();
+        }
+      };
+      addPicker.addEventListener('value-changed', (ev) => {
+        handleAdd(ev.detail && ev.detail.value);
+      });
+      addPicker.addEventListener('change', () => {
+        handleAdd(addPicker.value);
+      });
+    }
+
+    // --- Per-entity overrides ---
+    root.querySelectorAll('.entity-overrides input[data-key="label"]').forEach(inp => {
+      this._bindEntityOverride(inp, (entity, val) => {
+        if (!this._config.label_overrides) this._config.label_overrides = {};
+        if (val) { this._config.label_overrides[entity] = val; }
+        else { delete this._config.label_overrides[entity]; }
+      });
+    });
+
+    root.querySelectorAll('.entity-overrides input[data-key="size"]').forEach(inp => {
+      this._bindEntityOverride(inp, (entity, val) => {
+        if (!this._config.size_overrides) this._config.size_overrides = {};
+        const num = parseInt(val, 10);
+        if (Number.isFinite(num) && num > 0) { this._config.size_overrides[entity] = num; }
+        else { delete this._config.size_overrides[entity]; }
+      });
+    });
+
+    root.querySelectorAll('.entity-overrides input[data-key="color_on"]').forEach(inp => {
+      this._bindEntityOverride(inp, (entity, val) => {
+        if (!this._config.color_overrides) this._config.color_overrides = {};
+        const existing = this._config.color_overrides[entity];
+        const cur = (existing && typeof existing === 'object') ? existing : {};
+        if (val) { cur.state_on = val; } else { delete cur.state_on; }
+        if (cur.state_on || cur.state_off) { this._config.color_overrides[entity] = cur; }
+        else { delete this._config.color_overrides[entity]; }
+        const preview = root.querySelector(`.color-preview[data-entity="${entity}"][data-state="on"]`);
+        if (preview) preview.style.background = val || 'transparent';
+      });
+    });
+
+    root.querySelectorAll('.entity-overrides input[data-key="color_off"]').forEach(inp => {
+      this._bindEntityOverride(inp, (entity, val) => {
+        if (!this._config.color_overrides) this._config.color_overrides = {};
+        const existing = this._config.color_overrides[entity];
+        const cur = (existing && typeof existing === 'object') ? existing : {};
+        if (val) { cur.state_off = val; } else { delete cur.state_off; }
+        if (cur.state_on || cur.state_off) { this._config.color_overrides[entity] = cur; }
+        else { delete this._config.color_overrides[entity]; }
+        const preview = root.querySelector(`.color-preview[data-entity="${entity}"][data-state="off"]`);
+        if (preview) preview.style.background = val || 'transparent';
+      });
+    });
+
+    // Per-entity icon-only switch
+    requestAnimationFrame(() => {
+      root.querySelectorAll('.entity-overrides ha-switch[data-key="iconOnly"]').forEach(sw => {
+        sw.addEventListener('change', () => {
+          const entity = sw.dataset.entity;
+          if (!this._config.icon_only_overrides) this._config.icon_only_overrides = {};
+          if (sw.checked) { this._config.icon_only_overrides[entity] = true; }
+          else { delete this._config.icon_only_overrides[entity]; }
+          this._fireConfigChanged();
+        });
+      });
+    });
+
+    // Per-entity icon rotation override
+    root.querySelectorAll('.entity-overrides input[data-key="icon_rotation"]').forEach(inp => {
+      this._bindEntityOverride(inp, (entity, val) => {
+        if (!this._config.icon_rotation_overrides) this._config.icon_rotation_overrides = {};
+        const num = parseInt(val, 10);
+        if (Number.isFinite(num)) { this._config.icon_rotation_overrides[entity] = num; }
+        else { delete this._config.icon_rotation_overrides[entity]; }
+      });
+    });
+
+    // Per-entity icon mirror override
+    root.querySelectorAll('.entity-overrides select[data-key="icon_mirror"]').forEach(sel => {
+      sel.addEventListener('change', () => {
+        const entity = sel.dataset.entity;
+        if (!this._config.icon_mirror_overrides) this._config.icon_mirror_overrides = {};
+        if (sel.value && sel.value !== '') {
+          this._config.icon_mirror_overrides[entity] = sel.value;
+        } else {
+          delete this._config.icon_mirror_overrides[entity];
+        }
+        this._fireConfigChanged();
+      });
+    });
+
+    // --- General inputs ---
+    this._bindTextInput('cfgTitle', (val) => { this._config.title = val; });
+    this._bindNumberInput('cfgCanvasHeight', (val) => { if (val >= 100 && val <= 2000) this._config.canvas_height = val; });
+    this._bindNumberInput('cfgGridSize', (val) => { if (val >= 5 && val <= 100) this._config.grid_size = val; });
+    // Default entity picker
+    const defEntityPicker = root.getElementById('cfgDefaultEntity');
+    if (defEntityPicker) {
+      defEntityPicker.addEventListener('value-changed', (ev) => {
+        this._config.default_entity = ev.detail.value || null;
+        this._fireConfigChanged();
+      });
+      defEntityPicker.addEventListener('change', () => {
+        this._config.default_entity = defEntityPicker.value || null;
+        this._fireConfigChanged();
+      });
+    }
+
+    const labelModeEl = root.getElementById('cfgLabelMode');
+    if (labelModeEl) {
+      labelModeEl.addEventListener('change', () => {
+        this._config.label_mode = labelModeEl.value;
+        this._fireConfigChanged();
+      });
+    }
+
+    // Background image event listener is attached in _initBgUpload()
+
+    // --- Background image settings ---
+    const bgSettingChanged = () => {
+      // Convert string to object if needed
+      if (typeof this._config.background_image === 'string') {
+        this._config.background_image = { url: this._config.background_image };
+      }
+      if (!this._config.background_image) {
+        this._config.background_image = {};
+      }
+      const bg = this._config.background_image;
+      const bgSizeEl = root.getElementById('cfgBgSize');
+      const bgPosEl = root.getElementById('cfgBgPosition');
+      const bgRepeatEl = root.getElementById('cfgBgRepeat');
+      const bgBlendEl = root.getElementById('cfgBgBlendMode');
+      const bgOpacityEl = root.getElementById('cfgBgOpacity');
+      if (bgSizeEl) { if (bgSizeEl.value) bg.size = bgSizeEl.value; else delete bg.size; }
+      if (bgPosEl) { if (bgPosEl.value) bg.position = bgPosEl.value; else delete bg.position; }
+      if (bgRepeatEl) { if (bgRepeatEl.value) bg.repeat = bgRepeatEl.value; else delete bg.repeat; }
+      if (bgBlendEl) { if (bgBlendEl.value) bg.blend_mode = bgBlendEl.value; else delete bg.blend_mode; }
+      if (bgOpacityEl) {
+        const pct = parseInt(bgOpacityEl.value, 10);
+        if (Number.isFinite(pct) && pct < 100) bg.opacity = parseFloat((pct / 100).toFixed(2));
+        else delete bg.opacity;
+      }
+      // If empty object (no url, no settings), set to null
+      if (Object.keys(bg).length === 0) {
+        this._config.background_image = null;
+      }
+      this._fireConfigChanged();
+    };
+    ['cfgBgSize', 'cfgBgPosition', 'cfgBgRepeat', 'cfgBgBlendMode'].forEach(id => {
+      const el = root.getElementById(id);
+      if (el) el.addEventListener('change', bgSettingChanged);
+    });
+    const bgOpacitySlider = root.getElementById('cfgBgOpacity');
+    const bgOpacityValLabel = root.getElementById('cfgBgOpacityValue');
+    if (bgOpacitySlider) {
+      bgOpacitySlider.addEventListener('input', () => {
+        if (bgOpacityValLabel) bgOpacityValLabel.textContent = `${bgOpacitySlider.value}%`;
+      });
+      bgOpacitySlider.addEventListener('change', bgSettingChanged);
+    }
+
+    // --- Display/Layout/Interaction toggles ---
+    this._bindSwitch('cfgMinimalUI', 'minimal_ui');
+    this._bindSwitch('cfgShowIcons', 'show_entity_icons');
+    this._bindSwitch('cfgIconOnly', 'icon_only_mode');
+    this._bindSwitch('cfgLiveColors', 'show_live_colors');
+    this._bindSwitch('cfgAlwaysControls', 'always_show_controls');
+    this._bindSwitch('cfgControlsBelow', 'controls_below');
+    this._bindSwitch('cfgSwitchTap', 'switch_single_tap');
+
+    // Light size slider
+    const lsSlider = root.getElementById('cfgLightSize');
+    const lsVal = root.getElementById('cfgLightSizeValue');
+    if (lsSlider) {
+      lsSlider.addEventListener('input', () => { if (lsVal) lsVal.textContent = `${lsSlider.value}px`; });
+      lsSlider.addEventListener('change', () => {
+        const v = parseInt(lsSlider.value, 10);
+        if (Number.isFinite(v) && v > 0) { this._config.light_size = v; this._fireConfigChanged(); }
+      });
+    }
+
+    // Icon rotation slider
+    const irSlider = root.getElementById('cfgIconRotation');
+    const irVal = root.getElementById('cfgIconRotationValue');
+    if (irSlider) {
+      irSlider.addEventListener('input', () => { if (irVal) irVal.textContent = `${irSlider.value}°`; });
+      irSlider.addEventListener('change', () => {
+        const v = parseInt(irSlider.value, 10);
+        if (Number.isFinite(v)) { this._config.icon_rotation = v; this._fireConfigChanged(); }
+      });
+    }
+
+    // Icon mirror select
+    const mirrorEl = root.getElementById('cfgIconMirror');
+    if (mirrorEl) {
+      mirrorEl.addEventListener('change', () => {
+        this._config.icon_mirror = mirrorEl.value === 'none' ? 'none' : mirrorEl.value;
+        this._fireConfigChanged();
+      });
+    }
+
+    // --- Effect filter dropdowns ---
+    const efDefault = root.getElementById('cfgEffectFilterDefault');
+    if (efDefault) {
+      efDefault.addEventListener('change', () => {
+        this._config.effect_filter_default = efDefault.value;
+        this._fireConfigChanged();
+      });
+    }
+    const efSelected = root.getElementById('cfgEffectFilterSelected');
+    if (efSelected) {
+      efSelected.addEventListener('change', () => {
+        this._config.effect_filter_selected = efSelected.value;
+        this._fireConfigChanged();
+      });
+    }
+
+    // --- Color inputs (synced picker + text) ---
+    this._bindColorPair('cfgSwitchOnColor', 'cfgSwitchOnColorPicker', 'switch_on_color', '#ffa500');
+    this._bindColorPair('cfgSwitchOffColor', 'cfgSwitchOffColorPicker', 'switch_off_color', '#3a3a3a');
+    this._bindColorPair('cfgSceneColor', 'cfgSceneColorPicker', 'scene_color', '#6366f1');
+    this._bindColorPair('cfgBinarySensorOnColor', 'cfgBinarySensorOnColorPicker', 'binary_sensor_on_color', '#4caf50');
+    this._bindColorPair('cfgBinarySensorOffColor', 'cfgBinarySensorOffColorPicker', 'binary_sensor_off_color', '#2a2a2a');
+
+    // --- Color presets ---
+    root.querySelectorAll('.color-preset-chip .remove-preset').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const idx = parseInt(btn.dataset.index, 10);
+        if (!Array.isArray(this._config.color_presets)) return;
+        this._config.color_presets.splice(idx, 1);
+        this._fireConfigChanged();
+        this._render();
+      });
+    });
+
+    const addPresetBtn = root.getElementById('addPresetBtn');
+    const presetPicker = root.getElementById('presetColorPicker');
+    if (addPresetBtn && presetPicker) {
+      addPresetBtn.addEventListener('click', () => presetPicker.click());
+      presetPicker.addEventListener('input', (e) => {
+        const color = e.target.value;
+        if (!Array.isArray(this._config.color_presets)) this._config.color_presets = [];
+        this._config.color_presets.push(color);
+        this._fireConfigChanged();
+        this._render();
+      });
+    }
+
+    // --- Effect presets ---
+    root.querySelectorAll('.effect-preset-row .remove-effect-preset').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const idx = parseInt(btn.dataset.index, 10);
+        if (!Array.isArray(this._config.effect_presets)) return;
+        this._config.effect_presets.splice(idx, 1);
+        this._fireConfigChanged();
+        this._render();
+      });
+    });
+    root.querySelectorAll('.effect-preset-row .effect-name-input').forEach(input => {
+      input.addEventListener('change', () => {
+        const idx = parseInt(input.dataset.index, 10);
+        if (!Array.isArray(this._config.effect_presets) || !this._config.effect_presets[idx]) return;
+        this._config.effect_presets[idx].effect = input.value.trim();
+        this._fireConfigChanged();
+      });
+    });
+    root.querySelectorAll('.effect-preset-row .effect-icon-input').forEach(input => {
+      input.addEventListener('change', () => {
+        const idx = parseInt(input.dataset.index, 10);
+        if (!Array.isArray(this._config.effect_presets) || !this._config.effect_presets[idx]) return;
+        this._config.effect_presets[idx].icon = input.value.trim() || 'mdi:auto-fix';
+        this._fireConfigChanged();
+      });
+    });
+    root.querySelectorAll('.effect-filter-default').forEach(sel => {
+      sel.addEventListener('change', () => {
+        const idx = parseInt(sel.dataset.index, 10);
+        if (!Array.isArray(this._config.effect_presets) || !this._config.effect_presets[idx]) return;
+        this._config.effect_presets[idx].filter_default = sel.value || '';
+        this._fireConfigChanged();
+      });
+    });
+    root.querySelectorAll('.effect-filter-selected').forEach(sel => {
+      sel.addEventListener('change', () => {
+        const idx = parseInt(sel.dataset.index, 10);
+        if (!Array.isArray(this._config.effect_presets) || !this._config.effect_presets[idx]) return;
+        this._config.effect_presets[idx].filter_selected = sel.value || '';
+        this._fireConfigChanged();
+      });
+    });
+    root.querySelectorAll('.effect-light-cb').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const idx = parseInt(cb.dataset.index, 10);
+        if (!Array.isArray(this._config.effect_presets) || !this._config.effect_presets[idx]) return;
+        const preset = this._config.effect_presets[idx];
+        if (!Array.isArray(preset.lights)) preset.lights = [];
+        const entityId = cb.dataset.entity;
+        if (cb.checked) {
+          if (!preset.lights.includes(entityId)) preset.lights.push(entityId);
+        } else {
+          preset.lights = preset.lights.filter(l => l !== entityId);
+        }
+        // Update the "(all)" hint
+        const hintEl = cb.closest('.effect-lights-row')?.querySelector('.effect-lights-hint');
+        if (hintEl) hintEl.textContent = preset.lights.length === 0 ? '(all)' : '';
+        this._fireConfigChanged();
+      });
+    });
+    const addEffectPresetBtn = root.getElementById('addEffectPresetBtn');
+    if (addEffectPresetBtn) {
+      addEffectPresetBtn.addEventListener('click', () => {
+        if (!Array.isArray(this._config.effect_presets)) this._config.effect_presets = [];
+        this._config.effect_presets.push({ effect: '', icon: 'mdi:auto-fix', lights: [], filter_default: '', filter_selected: '' });
+        this._fireConfigChanged();
+        this._render();
+      });
+    }
+
+    // --- Canvas Elements ---
+    // Add canvas element buttons
+    root.querySelectorAll('.add-ce-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const type = btn.dataset.ceType;
+        if (!type) return;
+        if (!Array.isArray(this._config.canvas_elements)) this._config.canvas_elements = [];
+        const newId = this._generateCanvasElementId();
+        const newEl = { type, position: { x: 50, y: 50 }, id: newId, show_background: true };
+        if (type === 'link') { newEl.icon = 'mdi:link'; }
+        if (type === 'sensor') { newEl.entity = ''; newEl.show_icon = true; }
+        if (type === 'template') { newEl.content = ''; }
+        this._config.canvas_elements.push(newEl);
+        this._expandedCanvasElement = newEl.id;
+        this._fireConfigChanged();
+        this._render();
+      });
+    });
+
+    // Canvas element expand/collapse
+    root.querySelectorAll('.ce-main').forEach(main => {
+      main.addEventListener('click', (e) => {
+        if (e.target.closest('.entity-btn')) return;
+        const item = main.closest('.ce-item');
+        const ceId = item.dataset.ceId;
+        this._expandedCanvasElement = (this._expandedCanvasElement === ceId) ? null : ceId;
+        root.querySelectorAll('.ce-item').forEach(it => {
+          it.classList.toggle('expanded', it.dataset.ceId === this._expandedCanvasElement);
+        });
+      });
+    });
+    root.querySelectorAll('.ce-item .entity-btn.expand').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const item = btn.closest('.ce-item');
+        const ceId = item.dataset.ceId;
+        this._expandedCanvasElement = (this._expandedCanvasElement === ceId) ? null : ceId;
+        root.querySelectorAll('.ce-item').forEach(it => {
+          it.classList.toggle('expanded', it.dataset.ceId === this._expandedCanvasElement);
+        });
+      });
+    });
+
+    // Canvas element remove
+    root.querySelectorAll('.ce-item .entity-btn.remove').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const idx = parseInt(btn.dataset.ceIndex, 10);
+        if (!Array.isArray(this._config.canvas_elements)) return;
+        const removed = this._config.canvas_elements[idx];
+        this._config.canvas_elements.splice(idx, 1);
+        if (removed && this._expandedCanvasElement === removed.id) this._expandedCanvasElement = null;
+        this._fireConfigChanged();
+        this._render();
+      });
+    });
+
+    // Canvas element field editing
+    root.querySelectorAll('.ce-settings input, .ce-settings select').forEach(inp => {
+      const ceIndex = parseInt(inp.dataset.ceIndex, 10);
+      const key = inp.dataset.ceKey;
+      if (isNaN(ceIndex) || !key) return;
+
+      let timer = null;
+      const apply = () => {
+        clearTimeout(timer);
+        if (!Array.isArray(this._config.canvas_elements) || !this._config.canvas_elements[ceIndex]) return;
+        const el = this._config.canvas_elements[ceIndex];
+        const val = inp.value;
+
+        // Handle nested keys like "style.color" or "tap_action.action"
+        const parts = key.split('.');
+        if (parts.length === 1) {
+          // Simple field
+          if (key === 'size') {
+            const num = parseInt(val, 10);
+            el[key] = Number.isFinite(num) && num > 0 ? num : 40;
+          } else if (key === 'show_icon') {
+            el[key] = inp.checked;
+          } else {
+            el[key] = val;
+          }
+        } else if (parts[0] === 'style') {
+          if (!el.style) el.style = {};
+          const styleProp = parts[1];
+          if (val === '' || val === undefined) {
+            delete el.style[styleProp];
+          } else if (styleProp === 'font_size') {
+            const n = parseFloat(val);
+            if (Number.isFinite(n)) el.style[styleProp] = n;
+            else delete el.style[styleProp];
+          } else if (styleProp === 'opacity') {
+            const n = parseFloat(val);
+            if (Number.isFinite(n)) el.style[styleProp] = Math.max(0, Math.min(1, n));
+            else delete el.style[styleProp];
+          } else {
+            el.style[styleProp] = val;
+          }
+        } else if (parts[0] === 'tap_action' || parts[0] === 'hold_action' || parts[0] === 'double_tap_action') {
+          const actionKey = parts[0];
+          if (!el[actionKey]) el[actionKey] = { action: 'none' };
+          if (parts[1] === 'action') {
+            el[actionKey] = { action: val };
+            // Re-render to show/hide action-specific fields
+            this._fireConfigChanged();
+            this._render();
+            return;
+          } else {
+            el[actionKey][parts[1]] = val;
+          }
+        }
+        this._fireConfigChanged();
+      };
+
+      if (inp.tagName === 'SELECT') {
+        inp.addEventListener('change', apply);
+      } else {
+        inp.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(apply, 400); });
+        inp.addEventListener('change', apply);
+      }
+    });
+
+    // Canvas element entity pickers (ha-entity-picker)
+    requestAnimationFrame(() => {
+      root.querySelectorAll('.ce-entity-picker').forEach(picker => {
+        const ceIndex = parseInt(picker.dataset.ceIndex, 10);
+        const key = picker.dataset.ceKey;
+        if (isNaN(ceIndex) || !key) return;
+        const el = this._config.canvas_elements?.[ceIndex];
+        if (!el) return;
+        // Set initial value
+        const parts = key.split('.');
+        if (parts.length === 1) {
+          picker.value = el[key] || '';
+        } else {
+          picker.value = el[parts[0]]?.[parts[1]] || el.entity || '';
+        }
+        if (this._hass) picker.hass = this._hass;
+        // Listen for value changes
+        picker.addEventListener('value-changed', (e) => {
+          const val = e.detail?.value || '';
+          if (!Array.isArray(this._config.canvas_elements) || !this._config.canvas_elements[ceIndex]) return;
+          const el = this._config.canvas_elements[ceIndex];
+          const parts = key.split('.');
+          if (parts.length === 1) {
+            el[key] = val;
+          } else {
+            const actionKey = parts[0];
+            if (!el[actionKey]) el[actionKey] = { action: 'none' };
+            el[actionKey][parts[1]] = val;
+          }
+          this._fireConfigChanged();
+        });
+      });
+    });
+
+    // Canvas element background toggle
+    requestAnimationFrame(() => {
+      root.querySelectorAll('.ce-bg-switch').forEach(sw => {
+        const ceIndex = parseInt(sw.dataset.ceIndex, 10);
+        if (isNaN(ceIndex)) return;
+        sw.addEventListener('change', () => {
+          if (!Array.isArray(this._config.canvas_elements) || !this._config.canvas_elements[ceIndex]) return;
+          this._config.canvas_elements[ceIndex].show_background = sw.checked;
+          this._fireConfigChanged();
+        });
+      });
+    });
+
+    // Canvas element show_icon toggle (sensor type)
+    requestAnimationFrame(() => {
+      root.querySelectorAll('.ce-show-icon-switch').forEach(sw => {
+        const ceIndex = parseInt(sw.dataset.ceIndex, 10);
+        if (isNaN(ceIndex)) return;
+        sw.addEventListener('change', () => {
+          if (!Array.isArray(this._config.canvas_elements) || !this._config.canvas_elements[ceIndex]) return;
+          this._config.canvas_elements[ceIndex].show_icon = sw.checked;
+          this._fireConfigChanged();
+        });
+      });
+    });
+
+    // --- Temperature inputs ---
+    this._bindNumberInput('cfgTempMin', (val) => {
+      this._config.temperature_min = (val >= 1000 && val <= 10000) ? val : null;
+    });
+    this._bindNumberInput('cfgTempMax', (val) => {
+      this._config.temperature_max = (val >= 1000 && val <= 10000) ? val : null;
+    });
+
+    // --- Glow settings ---
+    const ensureGlow = () => {
+      if (!this._config.glow || typeof this._config.glow !== 'object') this._config.glow = {};
+    };
+    const glowEnabledEl = root.getElementById('cfgGlowEnabled');
+    if (glowEnabledEl) {
+      glowEnabledEl.addEventListener('change', () => {
+        ensureGlow();
+        this._config.glow.enabled = glowEnabledEl.checked;
+        this._fireConfigChanged();
+      });
+    }
+    const glowScaleEl = root.getElementById('cfgGlowScaleBrightness');
+    if (glowScaleEl) {
+      glowScaleEl.addEventListener('change', () => {
+        ensureGlow();
+        this._config.glow.scale_with_brightness = glowScaleEl.checked;
+        this._fireConfigChanged();
+      });
+    }
+
+    const glowShapeEl = root.getElementById('cfgGlowShape');
+    if (glowShapeEl) {
+      glowShapeEl.addEventListener('change', () => {
+        ensureGlow();
+        this._config.glow.shape = glowShapeEl.value;
+        // Show/hide custom shape textarea
+        const csRow = root.getElementById('cfgGlowCustomShapeRow');
+        if (csRow) csRow.style.display = glowShapeEl.value === 'custom' ? 'flex' : 'none';
+        this._fireConfigChanged();
+      });
+    }
+    const glowCustomShapeEl = root.getElementById('cfgGlowCustomShape');
+    if (glowCustomShapeEl) {
+      let csTimer = null;
+      const parseCustomShape = () => {
+        ensureGlow();
+        const parsed = this._parseCustomShapeText(glowCustomShapeEl.value);
+        if (parsed) { this._config.glow.custom_shape = parsed; }
+        else { delete this._config.glow.custom_shape; }
+        this._fireConfigChanged();
+      };
+      glowCustomShapeEl.addEventListener('input', () => {
+        clearTimeout(csTimer);
+        csTimer = setTimeout(parseCustomShape, 500);
+      });
+      glowCustomShapeEl.addEventListener('change', () => {
+        clearTimeout(csTimer);
+        parseCustomShape();
+      });
+    }
+    const glowFalloffEl = root.getElementById('cfgGlowFalloff');
+    if (glowFalloffEl) {
+      glowFalloffEl.addEventListener('change', () => {
+        ensureGlow();
+        this._config.glow.falloff = glowFalloffEl.value;
+        this._fireConfigChanged();
+      });
+    }
+
+    // Glow number inputs
+    const glowNumFields = [
+      ['cfgGlowDirection', 'direction'],
+      ['cfgGlowSpread', 'spread'],
+      ['cfgGlowLength', 'length'],
+      ['cfgGlowWidth', 'width'],
+      ['cfgGlowBlur', 'blur'],
+      ['cfgGlowOffsetX', 'offset_x'],
+      ['cfgGlowOffsetY', 'offset_y'],
+    ];
+    glowNumFields.forEach(([id, key]) => {
+      const el = root.getElementById(id);
+      if (!el) return;
+      el.addEventListener('change', () => {
+        ensureGlow();
+        const raw = el.value.trim();
+        if (raw === '') { delete this._config.glow[key]; }
+        else {
+          const v = parseFloat(raw);
+          if (Number.isFinite(v)) this._config.glow[key] = v;
+        }
+        this._fireConfigChanged();
+      });
+    });
+
+    // Glow intensity slider (0-100 → 0-1)
+    const glowIntSlider = root.getElementById('cfgGlowIntensity');
+    const glowIntLabel = root.getElementById('cfgGlowIntensityValue');
+    if (glowIntSlider) {
+      glowIntSlider.addEventListener('input', () => {
+        if (glowIntLabel) glowIntLabel.textContent = `${glowIntSlider.value}%`;
+      });
+      glowIntSlider.addEventListener('change', () => {
+        ensureGlow();
+        this._config.glow.intensity = parseFloat((parseInt(glowIntSlider.value, 10) / 100).toFixed(2));
+        this._fireConfigChanged();
+      });
+    }
+    // Glow edge softness slider (0-100 → 0-1)
+    const glowEdgeSlider = root.getElementById('cfgGlowEdgeSoftness');
+    const glowEdgeLabel = root.getElementById('cfgGlowEdgeSoftnessValue');
+    if (glowEdgeSlider) {
+      glowEdgeSlider.addEventListener('input', () => {
+        if (glowEdgeLabel) glowEdgeLabel.textContent = `${glowEdgeSlider.value}%`;
+      });
+      glowEdgeSlider.addEventListener('change', () => {
+        ensureGlow();
+        this._config.glow.edge_softness = parseFloat((parseInt(glowEdgeSlider.value, 10) / 100).toFixed(2));
+        this._fireConfigChanged();
+      });
+    }
+    // Glow start width slider (0-100 → 0-1)
+    const glowStartSlider = root.getElementById('cfgGlowStartWidth');
+    const glowStartLabel = root.getElementById('cfgGlowStartWidthValue');
+    if (glowStartSlider) {
+      glowStartSlider.addEventListener('input', () => {
+        if (glowStartLabel) glowStartLabel.textContent = `${glowStartSlider.value}%`;
+      });
+      glowStartSlider.addEventListener('change', () => {
+        ensureGlow();
+        this._config.glow.start_width = parseFloat((parseInt(glowStartSlider.value, 10) / 100).toFixed(2));
+        this._fireConfigChanged();
+      });
+    }
+
+    // Glow color (text + picker pair)
+    const glowColorText = root.getElementById('cfgGlowColor');
+    const glowColorPicker = root.getElementById('cfgGlowColorPicker');
+    if (glowColorText && glowColorPicker) {
+      let glowColorTimer = null;
+      glowColorText.addEventListener('input', () => {
+        clearTimeout(glowColorTimer);
+        glowColorTimer = setTimeout(() => {
+          ensureGlow();
+          const val = glowColorText.value.trim();
+          if (val) {
+            this._config.glow.color = val;
+            if (/^#[0-9a-fA-F]{6}$/.test(val)) glowColorPicker.value = val;
+          } else {
+            delete this._config.glow.color;
+          }
+          this._fireConfigChanged();
+        }, 400);
+      });
+      glowColorText.addEventListener('change', () => {
+        clearTimeout(glowColorTimer);
+        ensureGlow();
+        const val = glowColorText.value.trim();
+        if (val) {
+          this._config.glow.color = val;
+          if (/^#[0-9a-fA-F]{6}$/.test(val)) glowColorPicker.value = val;
+        } else {
+          delete this._config.glow.color;
+        }
+        this._fireConfigChanged();
+      });
+      glowColorPicker.addEventListener('input', () => {
+        glowColorText.value = glowColorPicker.value;
+        ensureGlow();
+        this._config.glow.color = glowColorPicker.value;
+        this._fireConfigChanged();
+      });
+    }
+
+    // --- Glow Walls ---
+    // Add wall buttons
+    const addWallLineBtn = root.getElementById('addWallLineBtn');
+    if (addWallLineBtn) {
+      addWallLineBtn.addEventListener('click', () => {
+        if (!Array.isArray(this._config.glow_walls)) this._config.glow_walls = [];
+        this._config.glow_walls.push({ x1: 20, y1: 50, x2: 80, y2: 50 });
+        this._fireConfigChanged();
+        this._render();
+      });
+    }
+    const addWallBoxBtn = root.getElementById('addWallBoxBtn');
+    if (addWallBoxBtn) {
+      addWallBoxBtn.addEventListener('click', () => {
+        if (!Array.isArray(this._config.glow_walls)) this._config.glow_walls = [];
+        this._config.glow_walls.push({ x: 20, y: 20, width: 60, height: 60 });
+        this._fireConfigChanged();
+        this._render();
+      });
+    }
+    // Wall remove buttons
+    root.querySelectorAll('.wall-item .entity-btn.remove').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const idx = parseInt(btn.dataset.wallIndex, 10);
+        if (!Array.isArray(this._config.glow_walls)) return;
+        this._config.glow_walls.splice(idx, 1);
+        this._fireConfigChanged();
+        this._render();
+      });
+    });
+    // Wall field editing
+    root.querySelectorAll('.wall-fields input').forEach(inp => {
+      const idx = parseInt(inp.dataset.wallIndex, 10);
+      const key = inp.dataset.wallKey;
+      if (isNaN(idx) || !key) return;
+      inp.addEventListener('change', () => {
+        if (!Array.isArray(this._config.glow_walls) || !this._config.glow_walls[idx]) return;
+        let wall = this._config.glow_walls[idx];
+        // Convert array to object form if needed
+        if (Array.isArray(wall)) {
+          wall = { x1: wall[0], y1: wall[1], x2: wall[2], y2: wall[3] };
+          this._config.glow_walls[idx] = wall;
+        }
+        const v = parseFloat(inp.value);
+        if (Number.isFinite(v)) wall[key] = v;
+        this._fireConfigChanged();
+      });
+    });
+
+    // --- Custom CSS ---
+    const customCssEl = root.getElementById('cfgCustomCss');
+    if (customCssEl) {
+      let cssTimer = null;
+      customCssEl.addEventListener('input', () => {
+        clearTimeout(cssTimer);
+        cssTimer = setTimeout(() => {
+          this._config.custom_css = customCssEl.value;
+          this._fireConfigChanged();
+        }, 500);
+      });
+      customCssEl.addEventListener('change', () => {
+        clearTimeout(cssTimer);
+        this._config.custom_css = customCssEl.value;
+        this._fireConfigChanged();
+      });
+    }
+
+    // --- Per-entity glow overrides ---
+    requestAnimationFrame(() => {
+      root.querySelectorAll('.entity-overrides ha-switch[data-key="glowEnabled"]').forEach(sw => {
+        sw.addEventListener('change', () => {
+          const entity = sw.dataset.entity;
+          if (!this._config.glow_overrides) this._config.glow_overrides = {};
+          if (!this._config.glow_overrides[entity]) this._config.glow_overrides[entity] = {};
+          this._config.glow_overrides[entity].enabled = sw.checked;
+          this._fireConfigChanged();
+        });
+      });
+    });
+    root.querySelectorAll('.entity-overrides select[data-key="glowShape"]').forEach(sel => {
+      sel.addEventListener('change', () => {
+        const entity = sel.dataset.entity;
+        if (!this._config.glow_overrides) this._config.glow_overrides = {};
+        if (!this._config.glow_overrides[entity]) this._config.glow_overrides[entity] = {};
+        if (sel.value) { this._config.glow_overrides[entity].shape = sel.value; }
+        else { delete this._config.glow_overrides[entity].shape; }
+        // Show/hide per-entity custom shape textarea
+        const csRow = root.querySelector(`.override-row[data-entity="${entity}"][data-key="glowCustomShapeRow"]`);
+        if (csRow) csRow.style.display = sel.value === 'custom' ? 'flex' : 'none';
+        this._fireConfigChanged();
+      });
+    });
+    root.querySelectorAll('.entity-overrides textarea[data-key="glowCustomShape"]').forEach(ta => {
+      let csTimer = null;
+      const parseAndSave = () => {
+        const entity = ta.dataset.entity;
+        if (!this._config.glow_overrides) this._config.glow_overrides = {};
+        if (!this._config.glow_overrides[entity]) this._config.glow_overrides[entity] = {};
+        const parsed = this._parseCustomShapeText(ta.value);
+        if (parsed) { this._config.glow_overrides[entity].custom_shape = parsed; }
+        else { delete this._config.glow_overrides[entity].custom_shape; }
+        this._fireConfigChanged();
+      };
+      ta.addEventListener('input', () => { clearTimeout(csTimer); csTimer = setTimeout(parseAndSave, 500); });
+      ta.addEventListener('change', () => { clearTimeout(csTimer); parseAndSave(); });
+    });
+    root.querySelectorAll('.entity-overrides input[data-key="glowDirection"]').forEach(inp => {
+      this._bindEntityOverride(inp, (entity, val) => {
+        if (!this._config.glow_overrides) this._config.glow_overrides = {};
+        if (!this._config.glow_overrides[entity]) this._config.glow_overrides[entity] = {};
+        const num = parseFloat(val);
+        if (Number.isFinite(num)) { this._config.glow_overrides[entity].direction = num; }
+        else { delete this._config.glow_overrides[entity].direction; }
+      });
+    });
+    root.querySelectorAll('.entity-overrides input[data-key="glowIntensity"]').forEach(inp => {
+      this._bindEntityOverride(inp, (entity, val) => {
+        if (!this._config.glow_overrides) this._config.glow_overrides = {};
+        if (!this._config.glow_overrides[entity]) this._config.glow_overrides[entity] = {};
+        const num = parseFloat(val);
+        if (Number.isFinite(num)) { this._config.glow_overrides[entity].intensity = Math.max(0, Math.min(1, num)); }
+        else { delete this._config.glow_overrides[entity].intensity; }
+      });
+    });
+
+    // --- Per-entity style overrides ---
+    root.querySelectorAll('.entity-overrides input[data-key="styleOverride"]').forEach(inp => {
+      this._bindEntityOverride(inp, (entity, val) => {
+        if (!this._config.style_overrides) this._config.style_overrides = {};
+        if (val) { this._config.style_overrides[entity] = val; }
+        else { delete this._config.style_overrides[entity]; }
+      });
+    });
+  }
+
+  _bindColorPair(textId, pickerId, configKey, fallback) {
+    const root = this.shadowRoot;
+    const textEl = root.getElementById(textId);
+    const pickerEl = root.getElementById(pickerId);
+    if (!textEl || !pickerEl) return;
+
+    let timer = null;
+    textEl.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const val = textEl.value.trim();
+        if (val) {
+          this._config[configKey] = val;
+          // Try to sync picker (only valid 6-digit hex)
+          if (/^#[0-9a-fA-F]{6}$/.test(val)) pickerEl.value = val;
+        } else {
+          this._config[configKey] = fallback;
+          pickerEl.value = fallback;
+        }
+        this._fireConfigChanged();
+      }, 400);
+    });
+    textEl.addEventListener('change', () => {
+      clearTimeout(timer);
+      const val = textEl.value.trim() || fallback;
+      this._config[configKey] = val;
+      if (/^#[0-9a-fA-F]{6}$/.test(val)) pickerEl.value = val;
+      this._fireConfigChanged();
+    });
+
+    pickerEl.addEventListener('input', () => {
+      textEl.value = pickerEl.value;
+      this._config[configKey] = pickerEl.value;
+      this._fireConfigChanged();
+    });
+  }
+
+  _bindEntityOverride(inputEl, setter) {
+    let timer = null;
+    const apply = () => {
+      clearTimeout(timer);
+      setter(inputEl.dataset.entity, inputEl.value);
+      this._fireConfigChanged();
+    };
+    inputEl.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(apply, 400); });
+    inputEl.addEventListener('change', apply);
+  }
+
+  _bindTextInput(id, setter) {
+    const el = this.shadowRoot.getElementById(id);
+    if (!el) return;
+    let t = null;
+    el.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => { setter(el.value); this._fireConfigChanged(); }, 300); });
+    el.addEventListener('change', () => { clearTimeout(t); setter(el.value); this._fireConfigChanged(); });
+  }
+
+  _bindNumberInput(id, setter) {
+    const el = this.shadowRoot.getElementById(id);
+    if (!el) return;
+    el.addEventListener('change', () => {
+      const raw = el.value.trim();
+      if (raw === '') { setter(null); this._fireConfigChanged(); return; }
+      const v = parseInt(raw, 10);
+      if (Number.isFinite(v)) { setter(v); this._fireConfigChanged(); }
+    });
+  }
+
+  _bindSwitch(id, key) {
+    const el = this.shadowRoot.getElementById(id);
+    if (!el) return;
+    el.addEventListener('change', () => { this._config[key] = el.checked; this._fireConfigChanged(); });
+  }
+}
+
+// Guard against double-registration if this module is loaded more than once
+// (e.g., manual /local/ resource + HACS, or HMR during development).
+if (!customElements.get('spatial-light-color-card-editor')) {
+  customElements.define('spatial-light-color-card-editor', SpatialLightColorCardEditor);
+}
+if (!customElements.get('spatial-light-color-card')) {
+  customElements.define('spatial-light-color-card', SpatialLightColorCard);
+}
+
+window.customCards = window.customCards || [];
+if (!window.customCards.some(c => c && c.type === 'spatial-light-color-card')) {
+  window.customCards.push({
+    type: 'spatial-light-color-card',
+    name: 'Spatial Light Color Card',
+    description: 'Spatial layout for lights with grouped color, brightness, and temperature controls.',
+    preview: true,
+    documentationURL: 'https://github.com/Mihonarium/hass-spatial-lights-card',
+  });
+}
+
+// Console banner — helps users include version info when reporting issues.
+console.info(
+  '%c spatial-light-color-card %c WIP ',
+  'color: #fff; background: #6366f1; font-weight: 700; border-radius: 3px 0 0 3px; padding: 2px 6px;',
+  'color: #6366f1; background: #1e1b4b; border-radius: 0 3px 3px 0; padding: 2px 6px;'
+);
