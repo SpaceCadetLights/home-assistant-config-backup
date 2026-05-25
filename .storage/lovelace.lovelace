@@ -403,6 +403,25 @@
                   "icon": "mdi:motion-sensor"
                 }
               ]
+            },
+            {
+              "type": "grid",
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "New section"
+                },
+                {
+                  "type": "map",
+                  "entities": [
+                    {
+                      "entity": "device_tracker.isaacs_iphone"
+                    }
+                  ],
+                  "theme_mode": "auto",
+                  "hours_to_show": 1000
+                }
+              ]
             }
           ]
         },

@@ -4,9 +4,21 @@
   "key": "lovelace.map",
   "data": {
     "config": {
-      "strategy": {
-        "type": "map"
-      }
+      "views": [
+        {
+          "type": "panel",
+          "title": "Map",
+          "icon": "mdi:map",
+          "cards": [
+            {
+              "type": "map",
+              "auto_fit": true,
+              "show_all": true,
+              "hours_to_show": 10000
+            }
+          ]
+        }
+      ]
     }
   }
 }
