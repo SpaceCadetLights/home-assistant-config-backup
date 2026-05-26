@@ -47,7 +47,6 @@ web_rtc:
         - "turns:webrtc.homeway.io:5349?transport=tcp"
       username: "UUO7QRHI72BH91H24FEH3SJXR65XM4OFBQK6VLTCVSWWU1WAOCHG70GYH9P5-1"
       credential: "583303CE72274A0BF0575A822BD9A3450A9F4E3E3E0D44D987898599BED4F2D3"
-
 # added to extend the length of time device positon tracking is kept. (added by isaac)
 recorder:
   purge_keep_days: 99999
