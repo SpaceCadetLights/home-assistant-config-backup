@@ -2,21 +2,106 @@
   {
     "name": "Remind to get Kombucha at Brutti when we arrive tomorrow.",
     "id": "747de444d8574f9ab3d730001babc168",
-    "complete": false
+    "complete": true
   },
   {
     "name": "git git eggs",
     "id": "8e30688b5262425c9336e19eebff0c6e",
-    "complete": false
+    "complete": true
   },
   {
     "name": "Wake up at 10:00 A.M.",
     "id": "93833747be864d61a8c37abfa3a659de",
-    "complete": false
+    "complete": true
   },
   {
     "name": "Give dogs bone broth, blueberries, and eggs tomorrow at noon",
     "id": "711ec7b0f0724df280f638f4d552baa4",
+    "complete": false
+  },
+  {
+    "name": "Garlic powder",
+    "id": "005456c554fe4d0ca1ae4f2559d873a0",
+    "complete": false
+  },
+  {
+    "name": "Peppercorns",
+    "id": "bae69e3a15144db2853e3c2c703eb472",
+    "complete": false
+  },
+  {
+    "name": "1 pound chicken breast",
+    "id": "3f2d4290a85e4ac6a5eb3f53ee820137",
+    "complete": false
+  },
+  {
+    "name": "2 cans coconut milk",
+    "id": "ee3c1f446e0b4eb18f207b61ac519d73",
+    "complete": false
+  },
+  {
+    "name": "2 stalks lemongrass",
+    "id": "7d3947bbdf56470e802e16b331eb59ec",
+    "complete": false
+  },
+  {
+    "name": "3 cups chicken stock",
+    "id": "cc3d3941ddb3439ab3e9ac4eb98c09d7",
+    "complete": false
+  },
+  {
+    "name": "6 kaffir lime leaves",
+    "id": "b23d55f1b9f342a4a8169eeedf5279b1",
+    "complete": false
+  },
+  {
+    "name": "2 tablespoons fish sauce",
+    "id": "ce97b2c829744188a29a637cddd5c334",
+    "complete": false
+  },
+  {
+    "name": "1 piece galangal root",
+    "id": "ec3523abafa343af91f60bb7ca9f1d6c",
+    "complete": false
+  },
+  {
+    "name": "1 tablespoon sugar",
+    "id": "d346e666878b4a59b8a26db9769713c5",
+    "complete": false
+  },
+  {
+    "name": "1 bunch cilantro",
+    "id": "969d7a1f099e4ae59fda6e7f71138947",
+    "complete": false
+  },
+  {
+    "name": "3 tablespoons lime juice",
+    "id": "91ccc0aba86948a39d7a5ab4c28b19ee",
+    "complete": false
+  },
+  {
+    "name": "8 ounces mushrooms",
+    "id": "ade1f79db6e44ab49093e39268f45ef8",
+    "complete": false
+  },
+  {
+    "name": "milk",
+    "id": "2afce2cda8ca46e2aaaef7897ac070ed",
+    "complete": false
+  },
+  {
+    "name": "cheese",
+    "id": "7f063e1bfbf34f0b96d62ef80d7cecfb",
+    "complete": false
+  },
+  {
+    "name": "Salmon and asparagus",
+    "id": "f2d25ef5b3ba4533a34ca5a1c53cec30",
+    "complete": false
+  },
+  {
+    "name": "raw cane sugar",
+    "id": "451f5882b44b424d80b55fe2068158bc",
     "complete": false
   }
 ]

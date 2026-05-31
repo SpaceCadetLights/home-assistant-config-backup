@@ -1,0 +1,51 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "SinricPro",
+        "description": "Enter your SinricPro API key to connect your devices.",
+        "data": {
+          "api_key": "API Key"
+        },
+        "data_description": {
+          "api_key": "Your SinricPro API key from the SinricPro dashboard."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate SinricPro",
+        "description": "Your SinricPro API key is no longer valid. Please enter a new API key to reconnect {title}.",
+        "data": {
+          "api_key": "API Key"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure SinricPro",
+        "description": "Update your SinricPro API key.",
+        "data": {
+          "api_key": "API Key"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid API key. Please check your credentials.",
+      "cannot_connect": "Failed to connect to SinricPro. Please check your network connection.",
+      "timeout": "Connection timed out. Please try again.",
+      "rate_limit": "Rate limit exceeded. Please wait a moment and try again.",
+      "unknown": "An unexpected error occurred. Please try again."
+    },
+    "abort": {
+      "already_configured": "SinricPro is already configured with this API key.",
+      "reauth_successful": "Reauthentication successful.",
+      "reauth_failed": "Reauthentication failed.",
+      "reconfigure_successful": "Reconfiguration successful."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "SinricPro Options",
+        "description": "Configure SinricPro integration options."
+      }
+    }
+  }
+}
