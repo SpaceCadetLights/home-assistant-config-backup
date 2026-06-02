@@ -129,6 +129,16 @@
                       }
                     }
                   ]
+                },
+                {
+                  "type": "tile",
+                  "entity": "cover.smart_blinds",
+                  "name": "Smart Blinds",
+                  "features": [
+                    {
+                      "type": "cover-open-close"
+                    }
+                  ]
                 }
               ]
             },

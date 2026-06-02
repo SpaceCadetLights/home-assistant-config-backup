@@ -50,3 +50,50 @@ web_rtc:
 # added to extend the length of time device positon tracking is kept. (added by isaac)
 recorder:
   purge_keep_days: 99999
+
+# added by isaac for blinds control
+
+rest_command:
+  sinric_blinds_open:
+    url: "https://apple.sinric.pro/v1/shortcuts/actions"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+    payload: >
+      {
+        "api_key": "57c863f7-0334-440e-ba9e-8843ed3b17e5",
+        "device_id": "67de1f40947cbabd20e2734f",
+        "action": "setPowerState",
+        "value": {
+          "state": "On"
+        }
+      }
+
+  sinric_blinds_close:
+    url: "https://apple.sinric.pro/v1/shortcuts/actions"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+    payload: >
+      {
+        "api_key": "57c863f7-0334-440e-ba9e-8843ed3b17e5",
+        "device_id": "67de1f40947cbabd20e2734f",
+        "action": "setPowerState",
+        "value": {
+          "state": "Off"
+        }
+      }
+
+template:
+  - cover:
+      - name: "Smart Blinds"
+        unique_id: sinric_smart_blinds
+
+        open_cover:
+          - action: rest_command.sinric_blinds_open
+
+        close_cover:
+          - action: rest_command.sinric_blinds_close
+
+        stop_cover:
+          - action: rest_command.sinric_blinds_close

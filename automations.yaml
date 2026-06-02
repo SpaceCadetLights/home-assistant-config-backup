@@ -173,3 +173,65 @@
     entity_id: b0fc2957ecdb1a2b04a0db35d8666420
     domain: light
   mode: single
+- id: '1780413904326'
+  alias: Blinds follow the sun
+  description: ''
+  triggers:
+  - trigger: sun
+    event: sunrise
+    offset: '-30'
+  - trigger: sun
+    event: sunset
+    offset: '+30'
+  conditions: []
+  actions:
+  - variables:
+      current_node: '{% if trigger.idx == "0" %}action_1780413894354_1_1{% else %}action_1780415591536_1{%
+        endif %}'
+      flow_context: {}
+  - alias: State Machine Loop
+    repeat:
+      until: '{{ current_node == "END" }}'
+      sequence:
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: '{{ current_node == "action_1780413894354_1_1" }}'
+          sequence:
+          - action: rest_command.sinric_blinds_open
+          - variables:
+              current_node: END
+        - conditions:
+          - condition: template
+            value_template: '{{ current_node == "action_1780415591536_1" }}'
+          sequence:
+          - action: rest_command.sinric_blinds_close
+          - variables:
+              current_node: END
+        default:
+        - data:
+            message: 'C.A.F.E.: Unknown state "{{ current_node }}", ending flow'
+            level: warning
+          action: system_log.write
+        - variables:
+            current_node: END
+  mode: single
+  variables:
+    _cafe_metadata:
+      version: 1
+      strategy: native
+      nodes:
+        trigger_1780413894352_0_0:
+          x: 12
+          y: 12
+        action_1780413894354_1_1:
+          x: 312
+          y: 12
+        trigger_1780415587031_0:
+          x: 15
+          y: 165
+        action_1780415591536_1:
+          x: 300
+          y: 180
+      graph_id: 463eaf2e-9150-48f8-980c-ba2a8a95bb00
+      graph_version: 1
