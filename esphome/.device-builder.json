@@ -1,7 +1,4 @@
 {
-  "_remote_build": {
-    "dashboard_id": "Vru503onOiJO0V4WYTFurTVevEMfFf8E"
-  },
   "_preferences": {
     "dashboard_view": "cards",
     "theme": "system",
@@ -12,5 +9,8 @@
     "table_sort_column": null,
     "table_sort_direction": null,
     "onboarding_completed_version": 1
+  },
+  "_dashboard_identity": {
+    "dashboard_id": "Vru503onOiJO0V4WYTFurTVevEMfFf8E"
   }
 }
