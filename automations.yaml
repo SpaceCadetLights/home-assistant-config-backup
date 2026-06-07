@@ -235,3 +235,20 @@
           y: 180
       graph_id: 463eaf2e-9150-48f8-980c-ba2a8a95bb00
       graph_version: 1
+- id: '1780775906154'
+  alias: Pause Spotify with double click
+  description: ''
+  triggers:
+  - device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
+    domain: zha
+    type: remote_button_double_press
+    subtype: button
+    trigger: device
+  conditions: []
+  actions:
+  - action: media_player.media_play_pause
+    metadata: {}
+    target:
+      entity_id: media_player.spotify_etcetre
+    data: {}
+  mode: single
