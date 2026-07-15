@@ -1,0 +1,45 @@
+# Package: studio_voice
+# Voice / Assist sentences that run Studio On / Studio Off scripts.
+
+automation:
+  - id: voice_studio_on
+    alias: voice.studio_on
+    description: Run Studio On when asked by Assist / Jarvis / any conversation agent.
+    mode: single
+    triggers:
+      - trigger: conversation
+        command:
+          - "Turn [the] studio on"
+          - "Turn on [the] studio"
+          - "Studio on"
+          - "[Please ]power on [the] studio"
+          - "[Please ]switch on [the] studio"
+          - "Lights on in [the] studio"
+          - "Turn [all ][the ]studio lights on"
+    actions:
+      - action: script.turn_on
+        target:
+          entity_id: script.studio_all_lights_on
+      - set_conversation_response: "Turning the studio on."
+
+  - id: voice_studio_off
+    alias: voice.studio_off
+    description: Run Studio Off when asked by Assist / Jarvis / any conversation agent.
+    mode: single
+    triggers:
+      - trigger: conversation
+        command:
+          - "Turn [the] studio off"
+          - "Turn off [the] studio"
+          - "Studio off"
+          - "[Please ]power off [the] studio"
+          - "[Please ]switch off [the] studio"
+          - "Lights off in [the] studio"
+          - "Turn [all ][the ]studio lights off"
+          - "Shut down [the] studio"
+          - "Shut off [the] studio"
+    actions:
+      - action: script.turn_on
+        target:
+          entity_id: script.studio_all_lights_off
+      - set_conversation_response: "Turning the studio off."

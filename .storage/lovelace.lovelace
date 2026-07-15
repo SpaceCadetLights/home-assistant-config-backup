@@ -8,10 +8,20 @@
       "views": [
         {
           "title": "Home",
-          "icon": "mdi:home-variant",
+          "path": "home",
+          "icon": "mdi:rocket-launch",
           "type": "sections",
           "max_columns": 3,
           "badges": [],
+          "theme": "JWST Deep Field",
+          "background": {
+            "image": "/local/jwst/carina.jpg",
+            "opacity": 65,
+            "size": "cover",
+            "alignment": "center",
+            "repeat": "no-repeat",
+            "attachment": "fixed"
+          },
           "sections": [
             {
               "type": "grid",
@@ -47,6 +57,51 @@
               "column_span": 3,
               "cards": [
                 {
+                  "type": "grid",
+                  "square": false,
+                  "columns": 2,
+                  "cards": [
+                    {
+                      "type": "button",
+                      "name": "Studio On",
+                      "icon": "mdi:white-balance-sunny",
+                      "show_name": true,
+                      "show_icon": true,
+                      "show_state": false,
+                      "icon_height": "56px",
+                      "tap_action": {
+                        "action": "call-service",
+                        "service": "script.turn_on",
+                        "target": {
+                          "entity_id": "script.studio_all_lights_on"
+                        }
+                      }
+                    },
+                    {
+                      "type": "button",
+                      "name": "Studio Off",
+                      "icon": "mdi:weather-night",
+                      "show_name": true,
+                      "show_icon": true,
+                      "show_state": false,
+                      "icon_height": "56px",
+                      "tap_action": {
+                        "action": "call-service",
+                        "service": "script.turn_on",
+                        "target": {
+                          "entity_id": "script.studio_all_lights_off"
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 3,
+              "cards": [
+                {
                   "type": "heading",
                   "heading": "Quick Actions",
                   "icon": "mdi:lightning-bolt"
@@ -54,79 +109,34 @@
                 {
                   "type": "grid",
                   "square": false,
-                  "columns": 4,
+                  "columns": 3,
                   "cards": [
                     {
                       "type": "tile",
-                      "name": "Stage On",
-                      "icon": "mdi:spotlight-beam",
-                      "color": "deep-purple",
-                      "tap_action": {
-                        "action": "call-service",
-                        "service": "switch.turn_on",
-                        "target": {
-                          "entity_id": [
-                            "switch.stage_lights_left",
-                            "switch.stage_lights_right",
-                            "switch.bar_lights"
-                          ]
-                        }
-                      }
+                      "entity": "light.build_space_lights",
+                      "name": "Build Space",
+                      "icon": "mdi:desk-lamp",
+                      "color": "amber",
+                      "features_position": "bottom",
+                      "vertical": true
                     },
                     {
                       "type": "tile",
-                      "name": "Stage Off",
-                      "icon": "mdi:spotlight",
-                      "color": "grey",
-                      "tap_action": {
-                        "action": "call-service",
-                        "service": "switch.turn_off",
-                        "target": {
-                          "entity_id": [
-                            "switch.stage_lights_left",
-                            "switch.stage_lights_right",
-                            "switch.bar_lights",
-                            "switch.dmx"
-                          ]
-                        }
-                      }
+                      "entity": "light.workshop_lights",
+                      "name": "Workshop",
+                      "icon": "mdi:stairs-down",
+                      "color": "indigo",
+                      "features_position": "bottom",
+                      "vertical": true
                     },
                     {
                       "type": "tile",
-                      "entity": "switch.p_a_speakers",
-                      "name": "PA Speakers",
-                      "icon": "mdi:speaker-multiple",
-                      "color": "green"
-                    },
-                    {
-                      "type": "tile",
-                      "name": "All Lights Off",
-                      "icon": "mdi:power",
-                      "color": "red",
-                      "tap_action": {
-                        "action": "call-service",
-                        "service": "homeassistant.turn_off",
-                        "target": {
-                          "entity_id": [
-                            "switch.stage_lights_left",
-                            "switch.stage_lights_right",
-                            "switch.bar_lights",
-                            "switch.dmx",
-                            "switch.desk_leds",
-                            "switch.earth",
-                            "switch.leg_lamp",
-                            "switch.front_right_lamp",
-                            "switch.red_desk_lamp",
-                            "switch.outdoor_white_lights",
-                            "switch.3d_printer_light",
-                            "switch.cnc_table_light",
-                            "switch.laser_station_light",
-                            "switch.clamp_lamp",
-                            "switch.paint_booth_light",
-                            "light.trillium"
-                          ]
-                        }
-                      }
+                      "entity": "light.lounge_lights",
+                      "name": "Lounge",
+                      "icon": "mdi:sofa",
+                      "color": "cyan",
+                      "features_position": "bottom",
+                      "vertical": true
                     }
                   ]
                 },
@@ -169,17 +179,17 @@
                 {
                   "type": "tile",
                   "entity": "person.space_cadets",
-                  "color": "indigo"
+                  "color": "deep-purple"
                 },
                 {
                   "type": "tile",
                   "entity": "person.isaac_norris",
-                  "color": "indigo"
+                  "color": "deep-purple"
                 },
                 {
                   "type": "tile",
                   "entity": "person.jared_lee_lyons",
-                  "color": "indigo"
+                  "color": "deep-purple"
                 },
                 {
                   "type": "tile",
@@ -187,6 +197,123 @@
                   "name": "MONA Voice",
                   "icon": "mdi:robot",
                   "color": "teal"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 1,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Build Space",
+                  "icon": "mdi:desk-lamp"
+                },
+                {
+                  "type": "tile",
+                  "entity": "light.build_space_lights",
+                  "name": "All Build Space",
+                  "icon": "mdi:lightbulb-group",
+                  "color": "amber"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.desk_leds",
+                  "name": "Desk LEDs",
+                  "color": "amber"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.leg_lamp",
+                  "name": "Leg Lamp",
+                  "color": "amber"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.red_desk_lamp",
+                  "name": "Red Desk Lamp",
+                  "color": "red"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 1,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Lounge",
+                  "icon": "mdi:sofa"
+                },
+                {
+                  "type": "tile",
+                  "entity": "light.lounge_lights",
+                  "name": "All Lounge",
+                  "icon": "mdi:lightbulb-group",
+                  "color": "cyan"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.earth",
+                  "name": "Earth",
+                  "icon": "mdi:earth",
+                  "color": "teal"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.ceiling_fan",
+                  "name": "Ceiling Fan",
+                  "icon": "mdi:ceiling-fan",
+                  "color": "cyan"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.front_right_lamp",
+                  "name": "Front Lamp",
+                  "color": "amber"
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 1,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading": "Stage",
+                  "icon": "mdi:spotlight"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.stage_lights_left",
+                  "name": "Stage Left",
+                  "color": "deep-purple"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.stage_lights_right",
+                  "name": "Stage Right",
+                  "color": "deep-purple"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.bar_lights",
+                  "name": "Bar Lights",
+                  "color": "purple"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.dmx",
+                  "name": "DMX",
+                  "color": "purple",
+                  "icon": "mdi:led-strip"
+                },
+                {
+                  "type": "tile",
+                  "entity": "switch.p_a_speakers",
+                  "name": "PA Speakers",
+                  "icon": "mdi:speaker-multiple",
+                  "color": "green"
                 }
               ]
             },
@@ -234,91 +361,6 @@
             },
             {
               "type": "grid",
-              "column_span": 1,
-              "cards": [
-                {
-                  "type": "heading",
-                  "heading": "Stage",
-                  "icon": "mdi:spotlight"
-                },
-                {
-                  "type": "tile",
-                  "entity": "switch.stage_lights_left",
-                  "name": "Stage Left",
-                  "color": "deep-purple"
-                },
-                {
-                  "type": "tile",
-                  "entity": "switch.stage_lights_right",
-                  "name": "Stage Right",
-                  "color": "deep-purple"
-                },
-                {
-                  "type": "tile",
-                  "entity": "switch.bar_lights",
-                  "name": "Bar Lights",
-                  "color": "purple"
-                },
-                {
-                  "type": "tile",
-                  "entity": "switch.dmx",
-                  "name": "DMX",
-                  "color": "purple",
-                  "icon": "mdi:led-strip"
-                }
-              ]
-            },
-            {
-              "type": "grid",
-              "column_span": 1,
-              "cards": [
-                {
-                  "type": "heading",
-                  "heading": "Lounge",
-                  "icon": "mdi:sofa"
-                },
-                {
-                  "type": "tile",
-                  "entity": "switch.ceiling_fan",
-                  "name": "Ceiling Fan",
-                  "icon": "mdi:ceiling-fan",
-                  "color": "cyan"
-                },
-                {
-                  "type": "tile",
-                  "entity": "switch.earth",
-                  "name": "Earth",
-                  "icon": "mdi:earth",
-                  "color": "teal"
-                },
-                {
-                  "type": "tile",
-                  "entity": "switch.desk_leds",
-                  "name": "Desk LEDs",
-                  "color": "teal"
-                },
-                {
-                  "type": "tile",
-                  "entity": "switch.front_right_lamp",
-                  "name": "Front Lamp",
-                  "color": "amber"
-                },
-                {
-                  "type": "tile",
-                  "entity": "switch.leg_lamp",
-                  "name": "Leg Lamp",
-                  "color": "amber"
-                },
-                {
-                  "type": "tile",
-                  "entity": "switch.red_desk_lamp",
-                  "name": "Red Desk Lamp",
-                  "color": "red"
-                }
-              ]
-            },
-            {
-              "type": "grid",
               "column_span": 2,
               "cards": [
                 {
@@ -327,37 +369,44 @@
                   "icon": "mdi:wrench"
                 },
                 {
+                  "type": "tile",
+                  "entity": "light.workshop_lights",
+                  "name": "All Workshop",
+                  "icon": "mdi:lightbulb-group",
+                  "color": "indigo"
+                },
+                {
                   "type": "grid",
                   "square": false,
                   "columns": 3,
                   "cards": [
                     {
                       "type": "tile",
+                      "entity": "switch.basement_light",
+                      "name": "Basement",
+                      "icon": "mdi:stairs-down",
+                      "color": "blue-grey"
+                    },
+                    {
+                      "type": "tile",
                       "entity": "switch.3d_printer_light",
                       "name": "3D Printer",
                       "icon": "mdi:printer-3d",
-                      "color": "blue"
+                      "color": "indigo"
                     },
                     {
                       "type": "tile",
                       "entity": "switch.cnc_table_light",
                       "name": "CNC Table",
                       "icon": "mdi:router",
-                      "color": "blue"
+                      "color": "indigo"
                     },
                     {
                       "type": "tile",
                       "entity": "switch.laser_station_light",
                       "name": "Laser",
                       "icon": "mdi:laser-pointer",
-                      "color": "blue"
-                    },
-                    {
-                      "type": "tile",
-                      "entity": "switch.clamp_lamp",
-                      "name": "Clamp Lamp",
-                      "icon": "mdi:lamp",
-                      "color": "blue-grey"
+                      "color": "indigo"
                     },
                     {
                       "type": "tile",
@@ -368,10 +417,9 @@
                     },
                     {
                       "type": "tile",
-                      "entity": "switch.outdoor_white_lights",
-                      "name": "Outdoor",
-                      "icon": "mdi:outdoor-lamp",
-                      "color": "light-blue"
+                      "entity": "binary_sensor.motion_sensor_2_occupancy",
+                      "name": "Workshop Motion",
+                      "icon": "mdi:motion-sensor"
                     }
                   ]
                 }
@@ -383,8 +431,8 @@
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "Bathroom & Basement",
-                  "icon": "mdi:home-floor-b"
+                  "heading": "Bathroom",
+                  "icon": "mdi:shower"
                 },
                 {
                   "type": "tile",
@@ -395,20 +443,7 @@
                 },
                 {
                   "type": "tile",
-                  "entity": "switch.basement_light",
-                  "name": "Basement",
-                  "icon": "mdi:stairs-down",
-                  "color": "blue-grey"
-                },
-                {
-                  "type": "tile",
                   "entity": "binary_sensor.motion_sensor_1_occupancy",
-                  "name": "Workshop Motion",
-                  "icon": "mdi:motion-sensor"
-                },
-                {
-                  "type": "tile",
-                  "entity": "binary_sensor.motion_sensor_2_occupancy",
                   "name": "Bathroom Motion",
                   "icon": "mdi:motion-sensor"
                 }
@@ -416,20 +451,19 @@
             },
             {
               "type": "grid",
+              "column_span": 1,
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "New section"
+                  "heading": "Patio",
+                  "icon": "mdi:telescope"
                 },
                 {
-                  "type": "map",
-                  "entities": [
-                    {
-                      "entity": "device_tracker.isaacs_iphone"
-                    }
-                  ],
-                  "theme_mode": "auto",
-                  "hours_to_show": 1000
+                  "type": "tile",
+                  "entity": "switch.outdoor_white_lights",
+                  "name": "Outdoor Lights",
+                  "icon": "mdi:outdoor-lamp",
+                  "color": "light-blue"
                 }
               ]
             }
@@ -437,10 +471,20 @@
         },
         {
           "title": "Media",
+          "path": "media",
           "icon": "mdi:play-circle",
           "type": "sections",
           "max_columns": 2,
           "badges": [],
+          "theme": "JWST Deep Field",
+          "background": {
+            "image": "/local/jwst/southern_ring.jpg",
+            "opacity": 65,
+            "size": "cover",
+            "alignment": "center",
+            "repeat": "no-repeat",
+            "attachment": "fixed"
+          },
           "sections": [
             {
               "type": "grid",
@@ -529,10 +573,20 @@
         },
         {
           "title": "System",
-          "icon": "mdi:cog",
+          "path": "system",
+          "icon": "mdi:satellite-uplink",
           "type": "sections",
           "max_columns": 2,
           "badges": [],
+          "theme": "JWST Deep Field",
+          "background": {
+            "image": "/local/jwst/pillars.jpg",
+            "opacity": 65,
+            "size": "cover",
+            "alignment": "center",
+            "repeat": "no-repeat",
+            "attachment": "fixed"
+          },
           "sections": [
             {
               "type": "grid",
@@ -542,7 +596,7 @@
                   "type": "heading",
                   "heading": "System",
                   "heading_style": "title",
-                  "icon": "mdi:cog"
+                  "icon": "mdi:satellite-uplink"
                 }
               ]
             },
@@ -558,13 +612,13 @@
                   "type": "tile",
                   "entity": "update.home_assistant_core_update",
                   "name": "HA Core",
-                  "color": "blue"
+                  "color": "indigo"
                 },
                 {
                   "type": "tile",
                   "entity": "update.home_assistant_operating_system_update",
                   "name": "HA OS",
-                  "color": "blue"
+                  "color": "indigo"
                 },
                 {
                   "type": "tile",

@@ -1,0 +1,60 @@
+studio_all_lights_on:
+  alias: Studio On
+  description: Turn on upstairs/studio lights (excludes bathroom mirror + workshop — motion only).
+  icon: mdi:lightbulb-group
+  mode: single
+  sequence:
+    - action: light.turn_on
+      target:
+        entity_id:
+          - light.build_space_lights
+          - light.lounge_lights
+          - light.trillium
+          - light.front_right_lamp
+          - light.bar_lights
+          - light.outdoor_white_lights
+    - action: switch.turn_on
+      target:
+        entity_id:
+          - switch.desk_leds
+          - switch.earth
+          - switch.leg_lamp
+          - switch.red_desk_lamp
+          - switch.bar_lights
+          - switch.outdoor_white_lights
+          - switch.front_right_lamp
+
+studio_all_lights_off:
+  alias: Studio Off
+  description: Turn off all studio lights including workshop; bathroom mirror stays motion-only.
+  icon: mdi:lightbulb-group-off
+  mode: single
+  sequence:
+    - action: light.turn_off
+      target:
+        entity_id:
+          - light.build_space_lights
+          - light.lounge_lights
+          - light.workshop_lights
+          - light.trillium
+          - light.front_right_lamp
+          - light.bar_lights
+          - light.outdoor_white_lights
+    - action: switch.turn_off
+      target:
+        entity_id:
+          - switch.stage_lights_left
+          - switch.stage_lights_right
+          - switch.bar_lights
+          - switch.dmx
+          - switch.desk_leds
+          - switch.earth
+          - switch.leg_lamp
+          - switch.front_right_lamp
+          - switch.red_desk_lamp
+          - switch.outdoor_white_lights
+          - switch.basement_light
+          - switch.3d_printer_light
+          - switch.cnc_table_light
+          - switch.laser_station_light
+          - switch.paint_booth_light

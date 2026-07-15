@@ -1,0 +1,71 @@
+# Package: studio_groups
+# Area light groups + overview toggle helpers.
+# Studio On/Off live in scripts.yaml.
+# Bathroom mirror + Workshop are not turned ON by Studio On — motion automations own those.
+# Studio Off does turn workshop lights off for a full studio blackout.
+
+light:
+  - platform: group
+    name: Build Space Lights
+    unique_id: studio_group_build_space_lights
+    entities:
+      - light.desk_leds
+      - light.leg_lamp
+      - light.red_desk_lamp
+
+  - platform: group
+    name: Lounge Lights
+    unique_id: studio_group_lounge_lights
+    entities:
+      - light.earth
+
+  - platform: group
+    name: Workshop Lights
+    unique_id: studio_group_workshop_lights
+    entities:
+      - light.basement_light
+      - light.3d_printer_light
+      - light.cnc_table_light
+      - light.laser_station_light
+      - light.paint_booth_light
+
+  - platform: group
+    name: Studio Lights
+    unique_id: studio_group_studio_lights
+    entities:
+      - light.desk_leds
+      - light.leg_lamp
+      - light.red_desk_lamp
+      - light.earth
+      - light.bar_lights
+      - light.outdoor_white_lights
+      - light.trillium
+      - light.front_right_lamp
+
+script:
+  studio_build_space_toggle:
+    alias: Toggle Build Space
+    icon: mdi:desk-lamp
+    mode: single
+    sequence:
+      - action: light.toggle
+        target:
+          entity_id: light.build_space_lights
+
+  studio_workshop_toggle:
+    alias: Toggle Workshop
+    icon: mdi:stairs-down
+    mode: single
+    sequence:
+      - action: light.toggle
+        target:
+          entity_id: light.workshop_lights
+
+  studio_lounge_toggle:
+    alias: Toggle Lounge
+    icon: mdi:sofa
+    mode: single
+    sequence:
+      - action: light.toggle
+        target:
+          entity_id: light.lounge_lights

@@ -1,19 +1,19 @@
 # Package: basement_lighting
 # Manages all lighting automation for the Workshop/Basement area.
-# Motion sensor: binary_sensor.motion_sensor_1_occupancy (ZHA)
+# Motion sensor: binary_sensor.motion_sensor_2_occupancy (ZHA)
 # Target: all switches in area basement (area_id: basement)
 #
 # Migrated from automations.yaml — 2026-05-09
-# Original IDs preserved for traceability.
+# Sensor corrected 2026-07-14 (sensor 2 is Workshop; sensor 1 is Bathroom).
 
 automation:
 
   - id: 'pkg_basement_lights_on'
     alias: 'lighting.basement.motion_lights_on'
-    description: 'Turn on all basement switches when Motion Sensor 1 detects occupancy.'
+    description: 'Turn on all basement switches when Workshop motion detects occupancy.'
     triggers:
       - trigger: state
-        entity_id: binary_sensor.motion_sensor_1_occupancy
+        entity_id: binary_sensor.motion_sensor_2_occupancy
         to: 'on'
     conditions: []
     actions:
@@ -27,7 +27,7 @@ automation:
     description: 'Turn off all basement switches after 15 minutes of no occupancy.'
     triggers:
       - trigger: state
-        entity_id: binary_sensor.motion_sensor_1_occupancy
+        entity_id: binary_sensor.motion_sensor_2_occupancy
         to: 'off'
         for:
           minutes: 15
