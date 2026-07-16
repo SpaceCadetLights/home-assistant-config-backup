@@ -179,10 +179,10 @@
   triggers:
   - trigger: sun
     event: sunrise
-    offset: '-30'
+    offset: '-60'
   - trigger: sun
     event: sunset
-    offset: '+30'
+    offset: '+60'
   conditions: []
   actions:
   - variables:
@@ -191,7 +191,9 @@
       flow_context: {}
   - alias: State Machine Loop
     repeat:
-      until: '{{ current_node == "END" }}'
+      until:
+      - condition: template
+        value_template: '{{ current_node == "END" }}'
       sequence:
       - choose:
         - conditions:
