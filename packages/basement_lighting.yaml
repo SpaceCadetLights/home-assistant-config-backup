@@ -1,39 +1,39 @@
 # Package: basement_lighting
-# Manages all lighting automation for the Workshop/Basement area.
-# Motion sensor: binary_sensor.motion_sensor_2_occupancy (ZHA)
-# Target: all switches in area basement (area_id: basement)
+# Workshop/Basement motion lighting.
+# Motion: binary_sensor.motion_sensor_2_occupancy (Workshop)
+# Lights: light.workshop_lights group (basement / 3D / CNC / laser / paint)
 #
-# Migrated from automations.yaml — 2026-05-09
-# Sensor corrected 2026-07-14 (sensor 2 is Workshop; sensor 1 is Bathroom).
+# Note: switch.turn_on with area_id basement does NOT work on these
+# devices (Switch as X / light entities). Always use light.workshop_lights.
 
 automation:
 
   - id: 'pkg_basement_lights_on'
     alias: 'lighting.basement.motion_lights_on'
-    description: 'Turn on all basement switches when Workshop motion detects occupancy.'
+    description: 'Turn on workshop lights when Workshop motion detects occupancy.'
+    mode: restart
     triggers:
       - trigger: state
         entity_id: binary_sensor.motion_sensor_2_occupancy
         to: 'on'
     conditions: []
     actions:
-      - action: switch.turn_on
+      - action: light.turn_on
         target:
-          area_id: basement
-    mode: single
+          entity_id: light.workshop_lights
 
   - id: 'pkg_basement_lights_off'
     alias: 'lighting.basement.motion_lights_off'
-    description: 'Turn off all basement switches after 15 minutes of no occupancy.'
+    description: 'Turn off workshop lights after 5 minutes of no occupancy.'
+    mode: restart
     triggers:
       - trigger: state
         entity_id: binary_sensor.motion_sensor_2_occupancy
         to: 'off'
         for:
-          minutes: 15
+          minutes: 5
     conditions: []
     actions:
-      - action: switch.turn_off
+      - action: light.turn_off
         target:
-          area_id: basement
-    mode: single
+          entity_id: light.workshop_lights
