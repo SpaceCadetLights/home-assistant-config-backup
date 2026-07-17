@@ -6,12 +6,17 @@
     "items": [
       {
         "id": "8b0bb8699b314b0d8b9db55c5b4d32ac",
-        "url": "/hacsfiles/mass-player-card/mass-player-card.js?hacstag=1043277514260",
+        "url": "/hacsfiles/mass-player-card/mass-player-card.js?hacstag=1043277514280",
         "type": "module"
       },
       {
         "id": "c64402cb9ba44a1ea85b83843dbc73a3",
         "url": "/hacsfiles/hass-spatial-lights-card/hass-spatial-lights-card.js?hacstag=10826055411110",
+        "type": "module"
+      },
+      {
+        "id": "7eb98dd8f582420b8ccb41c43e2f3e44",
+        "url": "/local/community/lovelace-card-mod/card-mod.js",
         "type": "module"
       }
     ]

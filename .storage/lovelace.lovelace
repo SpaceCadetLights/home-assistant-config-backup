@@ -16,7 +16,7 @@
           "theme": "JWST Deep Field",
           "background": {
             "image": "/local/jwst/carina.jpg",
-            "opacity": 65,
+            "opacity": 55,
             "size": "cover",
             "alignment": "center",
             "repeat": "no-repeat",
@@ -29,7 +29,7 @@
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "LaunchPad",
+                  "heading": "LAUNCHPAD",
                   "heading_style": "title",
                   "icon": "mdi:rocket-launch",
                   "badges": [
@@ -49,13 +49,29 @@
                       "show_state": false
                     }
                   ]
+                },
+                {
+                  "type": "markdown",
+                  "content": "<ha-alert alert-type=\"info\">MISSION CONTROL ONLINE</ha-alert>\n\n**{{ now().strftime('%H:%M:%S') }}** · {{ now().strftime('%a %d %b') }}\n\n`MONA` {{ states('assist_satellite.home_assistant_voice_0aab68_assist_satellite') | upper }} · `WORKSHOP` {{ states('binary_sensor.motion_sensor_2_occupancy') | upper }} · `MIRROR` {{ states('binary_sensor.motion_sensor_1_occupancy') | upper }}",
+                  "card_mod": {
+                    "style": "\nha-card {\n  border-color: rgba(126, 200, 255, 0.55) !important;\n  background: linear-gradient(135deg, rgba(10,24,48,0.95), rgba(6,12,28,0.92)) !important;\n  box-shadow: 0 0 40px rgba(80,170,255,0.25), inset 0 0 40px rgba(126,200,255,0.05) !important;\n}\nha-card {\n  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;\n  letter-spacing: 0.04em;\n}\n"
+                  }
                 }
               ]
             },
             {
               "type": "grid",
               "column_span": 3,
+              "background": {
+                "opacity": 35,
+                "color": "#071526"
+              },
               "cards": [
+                {
+                  "type": "heading",
+                  "heading": "POWER SYSTEMS",
+                  "icon": "mdi:flash"
+                },
                 {
                   "type": "grid",
                   "square": false,
@@ -63,34 +79,40 @@
                   "cards": [
                     {
                       "type": "button",
-                      "name": "Studio On",
+                      "name": "STUDIO ON",
                       "icon": "mdi:white-balance-sunny",
                       "show_name": true,
                       "show_icon": true,
                       "show_state": false,
-                      "icon_height": "56px",
+                      "icon_height": "64px",
                       "tap_action": {
                         "action": "call-service",
                         "service": "script.turn_on",
                         "target": {
                           "entity_id": "script.studio_all_lights_on"
                         }
+                      },
+                      "card_mod": {
+                        "style": "\nha-card {\n  border-color: rgba(94, 224, 200, 0.65) !important;\n  box-shadow: 0 0 28px rgba(94, 224, 200, 0.35), 0 12px 32px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.08) !important;\n}\nha-card:active {\n  transform: scale(0.985);\n}\n"
                       }
                     },
                     {
                       "type": "button",
-                      "name": "Studio Off",
+                      "name": "STUDIO OFF",
                       "icon": "mdi:weather-night",
                       "show_name": true,
                       "show_icon": true,
                       "show_state": false,
-                      "icon_height": "56px",
+                      "icon_height": "64px",
                       "tap_action": {
                         "action": "call-service",
                         "service": "script.turn_on",
                         "target": {
                           "entity_id": "script.studio_all_lights_off"
                         }
+                      },
+                      "card_mod": {
+                        "style": "\nha-card {\n  border-color: rgba(240, 198, 116, 0.65) !important;\n  box-shadow: 0 0 28px rgba(240, 198, 116, 0.32), 0 12px 32px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.08) !important;\n}\nha-card:active {\n  transform: scale(0.985);\n}\n"
                       }
                     }
                   ]
@@ -100,11 +122,15 @@
             {
               "type": "grid",
               "column_span": 3,
+              "background": {
+                "opacity": 30,
+                "color": "#0a1830"
+              },
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "Quick Actions",
-                  "icon": "mdi:lightning-bolt"
+                  "heading": "QUICK DEPLOY",
+                  "icon": "mdi:rocket"
                 },
                 {
                   "type": "grid",
@@ -155,11 +181,15 @@
             {
               "type": "grid",
               "column_span": 2,
+              "background": {
+                "opacity": 28,
+                "color": "#0c1a2e"
+              },
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "Music",
-                  "icon": "mdi:music"
+                  "heading": "COMMS / AUDIO",
+                  "icon": "mdi:broadcast"
                 },
                 {
                   "type": "media-control",
@@ -170,31 +200,35 @@
             {
               "type": "grid",
               "column_span": 1,
+              "background": {
+                "opacity": 28,
+                "color": "#101828"
+              },
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "Who's Here",
+                  "heading": "CREW",
                   "icon": "mdi:account-group"
                 },
                 {
                   "type": "tile",
                   "entity": "person.space_cadets",
-                  "color": "deep-purple"
+                  "color": "cyan"
                 },
                 {
                   "type": "tile",
                   "entity": "person.isaac_norris",
-                  "color": "deep-purple"
+                  "color": "cyan"
                 },
                 {
                   "type": "tile",
                   "entity": "person.jared_lee_lyons",
-                  "color": "deep-purple"
+                  "color": "cyan"
                 },
                 {
                   "type": "tile",
                   "entity": "assist_satellite.home_assistant_voice_0aab68_assist_satellite",
-                  "name": "MONA Voice",
+                  "name": "MONA",
                   "icon": "mdi:robot",
                   "color": "teal"
                 }
@@ -203,10 +237,14 @@
             {
               "type": "grid",
               "column_span": 1,
+              "background": {
+                "opacity": 26,
+                "color": "#1a1408"
+              },
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "Build Space",
+                  "heading": "BUILD SPACE",
                   "icon": "mdi:desk-lamp"
                 },
                 {
@@ -239,10 +277,14 @@
             {
               "type": "grid",
               "column_span": 1,
+              "background": {
+                "opacity": 26,
+                "color": "#081820"
+              },
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "Lounge",
+                  "heading": "LOUNGE",
                   "icon": "mdi:sofa"
                 },
                 {
@@ -277,10 +319,14 @@
             {
               "type": "grid",
               "column_span": 1,
+              "background": {
+                "opacity": 26,
+                "color": "#14081c"
+              },
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "Stage",
+                  "heading": "STAGE",
                   "icon": "mdi:spotlight"
                 },
                 {
@@ -320,10 +366,14 @@
             {
               "type": "grid",
               "column_span": 1,
+              "background": {
+                "opacity": 26,
+                "color": "#1c1008"
+              },
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "Art & WLED",
+                  "heading": "ART / WLED",
                   "icon": "mdi:led-strip-variant"
                 },
                 {
@@ -362,10 +412,14 @@
             {
               "type": "grid",
               "column_span": 2,
+              "background": {
+                "opacity": 28,
+                "color": "#08101c"
+              },
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "Workshop",
+                  "heading": "WORKSHOP / ENGINEERING",
                   "icon": "mdi:wrench"
                 },
                 {
@@ -419,7 +473,8 @@
                       "type": "tile",
                       "entity": "binary_sensor.motion_sensor_2_occupancy",
                       "name": "Workshop Motion",
-                      "icon": "mdi:motion-sensor"
+                      "icon": "mdi:motion-sensor",
+                      "color": "cyan"
                     }
                   ]
                 }
@@ -428,10 +483,14 @@
             {
               "type": "grid",
               "column_span": 1,
+              "background": {
+                "opacity": 26,
+                "color": "#0c1820"
+              },
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "Bathroom",
+                  "heading": "BATHROOM",
                   "icon": "mdi:shower"
                 },
                 {
@@ -452,10 +511,14 @@
             {
               "type": "grid",
               "column_span": 1,
+              "background": {
+                "opacity": 26,
+                "color": "#0a1420"
+              },
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "Patio",
+                  "heading": "EXTERIOR",
                   "icon": "mdi:telescope"
                 },
                 {
@@ -479,7 +542,7 @@
           "theme": "JWST Deep Field",
           "background": {
             "image": "/local/jwst/southern_ring.jpg",
-            "opacity": 65,
+            "opacity": 55,
             "size": "cover",
             "alignment": "center",
             "repeat": "no-repeat",
@@ -492,19 +555,30 @@
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "Media",
+                  "heading": "MEDIA BAY",
                   "heading_style": "title",
                   "icon": "mdi:play-circle"
+                },
+                {
+                  "type": "markdown",
+                  "content": "**TRANSMISSION DECK** · Southern Ring Nebula\n\n`SPOTIFY` {{ states('media_player.spotify_etcetre') | upper }}",
+                  "card_mod": {
+                    "style": "ha-card { font-family: ui-monospace, monospace; letter-spacing: 0.04em; }"
+                  }
                 }
               ]
             },
             {
               "type": "grid",
               "column_span": 2,
+              "background": {
+                "opacity": 28,
+                "color": "#0c1a2e"
+              },
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "Spotify",
+                  "heading": "SPOTIFY",
                   "icon": "mdi:spotify"
                 },
                 {
@@ -515,10 +589,14 @@
             },
             {
               "type": "grid",
+              "background": {
+                "opacity": 26,
+                "color": "#101828"
+              },
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "Projector",
+                  "heading": "PROJECTOR",
                   "icon": "mdi:projector"
                 },
                 {
@@ -535,10 +613,14 @@
             },
             {
               "type": "grid",
+              "background": {
+                "opacity": 26,
+                "color": "#081820"
+              },
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "MONA Voice",
+                  "heading": "MONA VOICE",
                   "icon": "mdi:robot"
                 },
                 {
@@ -581,7 +663,7 @@
           "theme": "JWST Deep Field",
           "background": {
             "image": "/local/jwst/pillars.jpg",
-            "opacity": 65,
+            "opacity": 52,
             "size": "cover",
             "alignment": "center",
             "repeat": "no-repeat",
@@ -594,18 +676,29 @@
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "System",
+                  "heading": "SHIP SYSTEMS",
                   "heading_style": "title",
                   "icon": "mdi:satellite-uplink"
+                },
+                {
+                  "type": "markdown",
+                  "content": "**TELEMETRY** · Deep field link\n\n`HA CORE` {{ states('update.home_assistant_core_update') | upper }}",
+                  "card_mod": {
+                    "style": "ha-card { font-family: ui-monospace, monospace; letter-spacing: 0.04em; }"
+                  }
                 }
               ]
             },
             {
               "type": "grid",
+              "background": {
+                "opacity": 28,
+                "color": "#0c1a2e"
+              },
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "Updates",
+                  "heading": "UPDATES",
                   "icon": "mdi:update"
                 },
                 {
@@ -630,10 +723,14 @@
             },
             {
               "type": "grid",
+              "background": {
+                "opacity": 26,
+                "color": "#081820"
+              },
               "cards": [
                 {
                   "type": "heading",
-                  "heading": "Connectivity",
+                  "heading": "CONNECTIVITY",
                   "icon": "mdi:wifi"
                 },
                 {

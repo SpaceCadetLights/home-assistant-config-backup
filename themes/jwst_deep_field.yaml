@@ -1,73 +1,157 @@
 JWST Deep Field:
-  primary-color: "#8ec5ff"
-  accent-color: "#f2c97d"
-  primary-text-color: "#f4f7ff"
-  secondary-text-color: "#a9b6d3"
-  text-primary-color: "#0a1020"
-  disabled-text-color: "#6b7690"
-  divider-color: "rgba(142, 197, 255, 0.16)"
-  primary-background-color: "#070b16"
-  secondary-background-color: "#10182b"
-  card-background-color: "rgba(12, 18, 36, 0.86)"
-  ha-card-background: "rgba(12, 18, 36, 0.86)"
-  paper-listbox-background-color: "#10182b"
-  app-header-background-color: "rgba(7, 11, 22, 0.92)"
-  app-header-text-color: "#f4f7ff"
-  app-header-border-color: "rgba(142, 197, 255, 0.12)"
-  ha-card-border-radius: "18px"
+  # LaunchPad Mission Control — spaceship HUD theme
+  card-mod-theme: JWST Deep Field
+
+  primary-color: "#7ec8ff"
+  accent-color: "#f0c674"
+  primary-text-color: "#eef5ff"
+  secondary-text-color: "#9eb6d4"
+  text-primary-color: "#061018"
+  disabled-text-color: "#5d6f88"
+  divider-color: "rgba(126, 200, 255, 0.18)"
+
+  primary-background-color: "#050a14"
+  secondary-background-color: "#0b1424"
+  card-background-color: "rgba(8, 14, 28, 0.88)"
+  ha-card-background: "rgba(8, 14, 28, 0.88)"
+  paper-listbox-background-color: "#0b1424"
+
+  app-header-background-color: "rgba(4, 8, 18, 0.94)"
+  app-header-text-color: "#eef5ff"
+  app-header-border-color: "rgba(126, 200, 255, 0.22)"
+
+  ha-card-border-radius: "14px"
   ha-card-border-width: "1px"
-  ha-card-border-color: "rgba(142, 197, 255, 0.28)"
-  ha-card-box-shadow: "0 10px 36px rgba(0, 0, 0, 0.55)"
+  ha-card-border-color: "rgba(126, 200, 255, 0.38)"
+  ha-card-box-shadow: "0 0 24px rgba(80, 180, 255, 0.18), 0 12px 40px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255,255,255,0.06)"
+
   lovelace-background: "center / cover no-repeat fixed url('/local/jwst/carina.jpg')"
-  switch-checked-color: "#8ec5ff"
-  switch-checked-button-color: "#f4f7ff"
-  switch-checked-track-color: "#3d6ea8"
-  switch-unchecked-button-color: "#c9d2e6"
-  switch-unchecked-track-color: "#3a4560"
-  state-icon-color: "#8ec5ff"
-  state-icon-active-color: "#f2c97d"
-  state-on: "#f2c97d"
-  state-off: "#6b7690"
-  rgb-primary-color: "142, 197, 255"
-  rgb-accent-color: "242, 201, 125"
-  rgb-primary-text-color: "244, 247, 255"
-  rgb-secondary-text-color: "169, 182, 211"
-  rgb-card-background-color: "12, 18, 36"
-  input-fill-color: "rgba(16, 24, 43, 0.94)"
-  input-ink-color: "#f4f7ff"
-  input-label-ink-color: "#a9b6d3"
-  input-disabled-fill-color: "rgba(16, 24, 43, 0.55)"
-  input-disabled-ink-color: "#6b7690"
-  input-dropdown-icon-color: "#8ec5ff"
-  mdc-theme-primary: "#8ec5ff"
-  mdc-theme-secondary: "#f2c97d"
-  mdc-theme-surface: "#10182b"
-  mdc-theme-background: "#070b16"
-  mdc-theme-on-primary: "#0a1020"
-  mdc-theme-on-secondary: "#0a1020"
-  mdc-theme-on-surface: "#f4f7ff"
-  paper-item-icon-color: "#8ec5ff"
-  paper-item-icon-active-color: "#f2c97d"
-  paper-slider-active-color: "#8ec5ff"
-  paper-slider-knob-color: "#f2c97d"
-  paper-slider-knob-start-color: "#8ec5ff"
-  paper-slider-pin-color: "#8ec5ff"
-  paper-slider-secondary-color: "#3d6ea8"
-  error-color: "#ff7b8a"
-  warning-color: "#f2c97d"
-  success-color: "#7ddecb"
-  info-color: "#8ec5ff"
-  markdown-code-background-color: "rgba(7, 11, 22, 0.92)"
+
+  switch-checked-color: "#7ec8ff"
+  switch-checked-button-color: "#eef5ff"
+  switch-checked-track-color: "#2f5f8f"
+  switch-unchecked-button-color: "#c5d4ea"
+  switch-unchecked-track-color: "#334158"
+
+  state-icon-color: "#7ec8ff"
+  state-icon-active-color: "#f0c674"
+  state-on: "#f0c674"
+  state-off: "#5d6f88"
+
+  rgb-primary-color: "126, 200, 255"
+  rgb-accent-color: "240, 198, 116"
+  rgb-primary-text-color: "238, 245, 255"
+  rgb-secondary-text-color: "158, 182, 212"
+  rgb-card-background-color: "8, 14, 28"
+
+  input-fill-color: "rgba(11, 20, 36, 0.96)"
+  input-ink-color: "#eef5ff"
+  input-label-ink-color: "#9eb6d4"
+  input-disabled-fill-color: "rgba(11, 20, 36, 0.5)"
+  input-disabled-ink-color: "#5d6f88"
+  input-dropdown-icon-color: "#7ec8ff"
+
+  mdc-theme-primary: "#7ec8ff"
+  mdc-theme-secondary: "#f0c674"
+  mdc-theme-surface: "#0b1424"
+  mdc-theme-background: "#050a14"
+  mdc-theme-on-primary: "#061018"
+  mdc-theme-on-secondary: "#061018"
+  mdc-theme-on-surface: "#eef5ff"
+
+  paper-item-icon-color: "#7ec8ff"
+  paper-item-icon-active-color: "#f0c674"
+  paper-slider-active-color: "#7ec8ff"
+  paper-slider-knob-color: "#f0c674"
+  paper-slider-knob-start-color: "#7ec8ff"
+  paper-slider-pin-color: "#7ec8ff"
+  paper-slider-secondary-color: "#2f5f8f"
+
+  error-color: "#ff6b7a"
+  warning-color: "#f0c674"
+  success-color: "#5ee0c8"
+  info-color: "#7ec8ff"
+  markdown-code-background-color: "rgba(4, 8, 18, 0.92)"
+
+  # Global HUD chrome via card-mod
+  card-mod-root-yaml: |
+    .: |
+      ha-sidebar {
+        backdrop-filter: blur(16px) saturate(1.2);
+        background: rgba(4, 8, 18, 0.92) !important;
+        border-right: 1px solid rgba(126, 200, 255, 0.18);
+      }
+      .header {
+        backdrop-filter: blur(18px) saturate(1.25);
+        box-shadow: 0 1px 0 rgba(126, 200, 255, 0.25), 0 8px 32px rgba(0,0,0,0.35);
+      }
+
+  card-mod-view-yaml: |
+    .: |
+      hui-view {
+        --ha-card-border-radius: 14px;
+      }
+
+  card-mod-card-yaml: |
+    .: |
+      ha-card {
+        backdrop-filter: blur(14px) saturate(1.15);
+        -webkit-backdrop-filter: blur(14px) saturate(1.15);
+        background: linear-gradient(
+          165deg,
+          rgba(18, 32, 56, 0.92) 0%,
+          rgba(8, 14, 28, 0.90) 55%,
+          rgba(6, 12, 24, 0.94) 100%
+        ) !important;
+        border: 1px solid rgba(126, 200, 255, 0.32) !important;
+        box-shadow:
+          0 0 0 1px rgba(126, 200, 255, 0.08),
+          0 0 28px rgba(70, 160, 255, 0.16),
+          0 14px 36px rgba(0, 0, 0, 0.45),
+          inset 0 1px 0 rgba(255, 255, 255, 0.07),
+          inset 0 -1px 0 rgba(126, 200, 255, 0.06) !important;
+        transition: box-shadow 0.25s ease, border-color 0.25s ease, transform 0.2s ease;
+        overflow: hidden;
+      }
+      ha-card::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: linear-gradient(
+          110deg,
+          transparent 0%,
+          rgba(126, 200, 255, 0.04) 40%,
+          transparent 70%
+        );
+        opacity: 0.9;
+      }
+      ha-card:hover {
+        border-color: rgba(126, 200, 255, 0.55) !important;
+        box-shadow:
+          0 0 0 1px rgba(126, 200, 255, 0.18),
+          0 0 36px rgba(90, 180, 255, 0.28),
+          0 16px 40px rgba(0, 0, 0, 0.5),
+          inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
+      }
+      ha-card .card-header,
+      ha-card h1,
+      ha-card .title {
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        font-weight: 600;
+      }
+
   modes:
     dark: {}
     light:
-      primary-background-color: "#070b16"
-      secondary-background-color: "#10182b"
-      card-background-color: "rgba(12, 18, 36, 0.86)"
-      ha-card-background: "rgba(12, 18, 36, 0.86)"
-      primary-text-color: "#f4f7ff"
-      secondary-text-color: "#a9b6d3"
-      app-header-background-color: "rgba(7, 11, 22, 0.92)"
-      app-header-text-color: "#f4f7ff"
-      input-fill-color: "rgba(16, 24, 43, 0.94)"
+      primary-background-color: "#050a14"
+      secondary-background-color: "#0b1424"
+      card-background-color: "rgba(8, 14, 28, 0.88)"
+      ha-card-background: "rgba(8, 14, 28, 0.88)"
+      primary-text-color: "#eef5ff"
+      secondary-text-color: "#9eb6d4"
+      app-header-background-color: "rgba(4, 8, 18, 0.94)"
+      app-header-text-color: "#eef5ff"
+      input-fill-color: "rgba(11, 20, 36, 0.96)"
       lovelace-background: "center / cover no-repeat fixed url('/local/jwst/carina.jpg')"
