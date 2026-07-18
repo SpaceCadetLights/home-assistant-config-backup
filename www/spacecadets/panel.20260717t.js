@@ -279,6 +279,10 @@ class SpaceCadetsPanel extends HTMLElement {
       disc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/></svg>',
       playc: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 7.5v9a.8.8 0 0 0 1.2.7l7-4.5a.8.8 0 0 0 0-1.4l-7-4.5A.8.8 0 0 0 9 7.5z"/></svg>',
       target: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/></svg>',
+      bulb: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 17.5h5M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.8h5c0-.7.4-1.4 1-1.8A6 6 0 0 0 12 3z"/></svg>',
+      gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.1"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>',
+      sofa: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 11V8.6A2.6 2.6 0 0 1 7.6 6h8.8A2.6 2.6 0 0 1 19 8.6V11"/><path d="M3.6 11.4a2 2 0 0 1 2 2V16h12.8v-2.6a2 2 0 1 1 4 0V18a1 1 0 0 1-1 1H2.6a1 1 0 0 1-1-1v-4.6a2 2 0 0 1 2-2z"/><path d="M6 19v1.6M18 19v1.6"/></svg>',
+      blinds: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="15" rx="1.2"/><path d="M4 7.4h16M4 11h16M4 14.6h16M12 18v3"/></svg>',
     };
     return I[name] || "";
   }
@@ -849,6 +853,7 @@ class SpaceCadetsPanel extends HTMLElement {
     if (view && !(active && view.contains(active) && ["INPUT", "SELECT"].includes(active.tagName))) {
       // Keep the live radar node across re-renders so RainViewer does not reload constantly.
       const keepRadar = view.querySelector("#sc-radar-keep");
+      view.classList.toggle("ov", this._tab === "overview");
       if (this._tab === "overview") view.innerHTML = this._htmlOverview();
       else if (this._tab === "lighting") view.innerHTML = this._htmlLighting();
       else if (this._tab === "media") view.innerHTML = this._htmlMedia();
@@ -880,15 +885,15 @@ class SpaceCadetsPanel extends HTMLElement {
         <div class="sc-card-title">QUICK CONTROLS</div>
         <div class="sc-quick-grid four">
           ${[
-            ["Build Space", "light.build_space_lights"],
-            ["Workshop", "light.workshop_lights"],
-            ["Lounge", "light.lounge_lights"],
-            ["Smart Blinds", "cover.smart_blinds"],
+            ["Build Space", "light.build_space_lights", "bulb"],
+            ["Workshop", "light.workshop_lights", "gear"],
+            ["Lounge", "light.lounge_lights", "sofa"],
+            ["Smart Blinds", "cover.smart_blinds", "blinds"],
           ]
             .map(
-              ([name, entity]) => `
+              ([name, entity, icon]) => `
             <button class="sc-quick ${this._on(entity) ? "lit" : ""}" data-act="toggle" data-entity="${entity}">
-              <div class="sc-quick-ring"></div>
+              <div class="sc-quick-ico">${this._ic(icon)}</div>
               <div class="sc-quick-name">${name}</div>
               <div class="sc-quick-pct">${this._pct(entity)}</div>
             </button>`
@@ -923,13 +928,12 @@ class SpaceCadetsPanel extends HTMLElement {
         </div>
       </div>
 
-      <div class="sc-row weather glass">
-        ${this._htmlWeatherRadar()}
+      <div class="sc-ov-nebula">
+        ${this._renderNebula()}
       </div>
 
-      <div class="sc-row mantra glass">
-        <div class="sc-astro"></div>
-        <p>THE UNIVERSE IS OUR CANVAS.<br/>LIGHT IS OUR LANGUAGE.<br/><strong>WE ARE SPACE CADETS.</strong></p>
+      <div class="sc-row weather glass">
+        ${this._htmlWeatherRadar()}
       </div>
 
       <div class="sc-row env glass">
@@ -944,6 +948,11 @@ class SpaceCadetsPanel extends HTMLElement {
             <div class="spark s2"></div>
           </div>
         </div>
+      </div>
+
+      <div class="sc-row mantra glass">
+        <div class="sc-astro"></div>
+        <p>THE UNIVERSE IS OUR CANVAS.<br/>LIGHT IS OUR LANGUAGE.<br/><strong>WE ARE SPACE CADETS.</strong></p>
       </div>
     `;
   }
@@ -1720,12 +1729,20 @@ class SpaceCadetsPanel extends HTMLElement {
 
     const baseFix = this._trackerFix(ent);
     const started = Date.now();
+    let pings = 1;              // already sent one above
+    let lastPing = Date.now();
     clearInterval(this._locatePoll);
     this._locatePoll = setInterval(async () => {
       if (!this._crewTrailPerson) { clearInterval(this._locatePoll); return; }
       const s = this._s(ent);
       const curFix = this._trackerFix(ent);
       const changed = curFix && curFix !== baseFix && s?.attributes?.latitude != null;
+      // Re-send the wake push a couple more times (iOS silent pushes are unreliable)
+      if (!changed && pings < 3 && Date.now() - lastPing >= 5000) {
+        this._requestLocation(personId);
+        pings++;
+        lastPing = Date.now();
+      }
       if (changed) {
         clearInterval(this._locatePoll);
         await this._loadCrewTrailDay({ reuseMap: true });
@@ -1739,10 +1756,10 @@ class SpaceCadetsPanel extends HTMLElement {
         }
         return;
       }
-      if (Date.now() - started > 22000) {
+      if (Date.now() - started > 30000) {
         clearInterval(this._locatePoll);
         if (btn) btn.classList.remove("pinging");
-        if (status) { status.textContent = "NO LIVE FIX — SHOWING LAST KNOWN"; setTimeout(() => status.classList.remove("show"), 2400); }
+        if (status) { status.textContent = "NO LIVE FIX — SHOWING LAST KNOWN"; setTimeout(() => status.classList.remove("show"), 2800); }
       }
     }, 1500);
   }
@@ -2571,6 +2588,9 @@ SpaceCadetsPanel.styles = `
   background: radial-gradient(circle at 40% 35%, rgba(255,255,255,0.35), transparent 45%);
 }
 .sc-quick.lit .sc-quick-ring { box-shadow: 0 0 26px rgba(232,121,249,0.7), inset 0 0 16px rgba(240,171,252,0.5); }
+.sc-quick-ico { width: 30px; height: 30px; margin: 0 auto 8px; color: #c4b5fd; display: grid; place-items: center; filter: drop-shadow(0 0 8px rgba(192,132,252,0.4)); transition: color 0.2s ease, filter 0.2s ease; }
+.sc-quick-ico svg { width: 100%; height: 100%; display: block; }
+.sc-quick.lit .sc-quick-ico { color: #f0abfc; filter: drop-shadow(0 0 12px rgba(232,121,249,0.85)); }
 .sc-quick-name { font-size: 13px; letter-spacing: 0.04em; }
 .sc-quick-pct { margin-top: 4px; color: #67e8f9; font-weight: 700; text-shadow: 0 0 10px rgba(103,232,249,0.5); }
 
@@ -3346,8 +3366,11 @@ SpaceCadetsPanel.styles = `
   .sc-meta-label { font-size: 8px; letter-spacing: 0.1em; }
   .sc-meta-value { font-size: 11px; margin-top: 2px; }
   .sc-meta-block { padding: 6px 8px; border-radius: 12px; }
-  .sc-quick-grid, .sc-quick-grid.four { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .sc-quick { padding: 12px 8px; }
+  .sc-quick-grid, .sc-quick-grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  .sc-quick { padding: 10px 4px; border-radius: 14px; }
+  .sc-quick-ico { width: 24px; height: 24px; margin-bottom: 5px; }
+  .sc-quick-name { font-size: 14px; letter-spacing: 0.01em; line-height: 1.15; }
+  .sc-quick-pct { font-size: 11px; margin-top: 2px; }
   .sc-zone-grid { grid-template-columns: 1fr; }
   .sc-nebula-grid { grid-template-columns: 1fr; }
   .sc-pick-grid, .sc-pick-grid.palette { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
@@ -3376,7 +3399,18 @@ SpaceCadetsPanel.styles = `
 @media (min-width: 901px) {
   .sc-zone-grid { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
   .sc-col.hero { max-height: 320px; }
+
+  /* Overview: 12-col layout — lights + audio core row (music beside nebula), weather below */
+  .sc-grid.ov { grid-template-columns: repeat(12, 1fr); align-items: stretch; }
+  .sc-grid.ov .sc-row.quick { grid-column: 1 / -1; }
+  .sc-grid.ov .sc-col.hero { grid-column: span 6; aspect-ratio: auto; max-height: none; min-height: 340px; }
+  .sc-grid.ov .sc-ov-nebula { grid-column: span 6; min-width: 0; display: flex; }
+  .sc-grid.ov .sc-ov-nebula > .sc-full { flex: 1; }
+  .sc-grid.ov .sc-row.weather { grid-column: 1 / -1; }
+  .sc-grid.ov .sc-row.env { grid-column: span 6; }
+  .sc-grid.ov .sc-row.mantra { grid-column: span 6; }
 }
+.sc-ov-nebula { min-width: 0; }
 `;
 
 customElements.define("spacecadets-panel", SpaceCadetsPanel);

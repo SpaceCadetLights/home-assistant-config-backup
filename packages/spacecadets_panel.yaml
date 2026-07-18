@@ -1,13 +1,9 @@
 # Package: spacecadets_panel
-# Custom neon-glass Space Cadets HUD panel (sidebar).
-# `name` MUST equal the custom element tag defined in panel.js (requires a hyphen).
-# After edits: restart Home Assistant so panel_custom re-registers.
-
 panel_custom:
   - name: spacecadets-panel
     sidebar_title: Space Cadets
     sidebar_icon: mdi:rocket-launch
     url_path: spacecadets
-    js_url: /local/spacecadets/panel.js
+    js_url: /local/spacecadets/panel.20260717t.js
     embed_iframe: false
     require_admin: false

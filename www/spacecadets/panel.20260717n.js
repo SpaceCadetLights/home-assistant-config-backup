@@ -278,7 +278,6 @@ class SpaceCadetsPanel extends HTMLElement {
       folder: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5z"/></svg>',
       disc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/></svg>',
       playc: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 7.5v9a.8.8 0 0 0 1.2.7l7-4.5a.8.8 0 0 0 0-1.4l-7-4.5A.8.8 0 0 0 9 7.5z"/></svg>',
-      target: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/></svg>',
     };
     return I[name] || "";
   }
@@ -1667,86 +1666,6 @@ class SpaceCadetsPanel extends HTMLElement {
     return phone || trackers[0] || personId;
   }
 
-  _notifyServiceFor(personId) {
-    const ent = this._bestTrailEntity(personId);
-    if (ent && ent.startsWith("device_tracker.")) {
-      const slug = ent.split(".")[1];
-      if (this._hass?.services?.notify?.["mobile_app_" + slug]) return "mobile_app_" + slug;
-    }
-    // Fallback: known phones by person
-    const known = {
-      "person.isaac_norris": "mobile_app_isaacs_iphone_14",
-      "person.jared_lee_lyons": "mobile_app_jareds_iphone",
-    };
-    const svc = known[personId];
-    if (svc && this._hass?.services?.notify?.[svc]) return svc;
-    return null;
-  }
-
-  _requestLocation(personId) {
-    const svc = this._notifyServiceFor(personId);
-    if (!svc) return false;
-    try {
-      this._call("notify", svc, { message: "request_location_update" });
-      return true;
-    } catch (_) { return false; }
-  }
-
-  _trackerFix(ent) {
-    const s = this._s(ent);
-    if (!s) return "";
-    const a = s.attributes || {};
-    return `${s.last_updated}|${a.latitude}|${a.longitude}`;
-  }
-
-  _locateNow(personId) {
-    const name = this._name(personId);
-    const ent = this._bestTrailEntity(personId);
-    const ok = this._requestLocation(personId);
-    const status = this.querySelector("#sc-trail-status");
-    const btn = this.querySelector("#sc-trail-locate");
-    if (btn) { btn.classList.remove("located"); btn.classList.toggle("pinging", ok); }
-    if (status) {
-      status.textContent = ok ? `PINGING ${(name || "DEVICE").toUpperCase()}'S DEVICE…` : "LIVE PING UNAVAILABLE FOR THIS CREW";
-      status.classList.add("show");
-    }
-    if (!ok) {
-      setTimeout(() => { status && status.classList.remove("show"); btn && btn.classList.remove("pinging"); }, 2600);
-      return;
-    }
-    // Make sure we're viewing today so the fresh fix appears
-    const todayKey = this._localDateKey(new Date());
-    if (this._crewTrailDayKey !== todayKey) { this._crewTrailDayKey = todayKey; this._refreshTrailDayChips(); }
-
-    const baseFix = this._trackerFix(ent);
-    const started = Date.now();
-    clearInterval(this._locatePoll);
-    this._locatePoll = setInterval(async () => {
-      if (!this._crewTrailPerson) { clearInterval(this._locatePoll); return; }
-      const s = this._s(ent);
-      const curFix = this._trackerFix(ent);
-      const changed = curFix && curFix !== baseFix && s?.attributes?.latitude != null;
-      if (changed) {
-        clearInterval(this._locatePoll);
-        await this._loadCrewTrailDay({ reuseMap: true });
-        // Zoom + center on the fresh point with a live blue ring
-        this._postTrailMap({ type: "sc-trail-live", lat: s.attributes.latitude, lon: s.attributes.longitude });
-        if (btn) { btn.classList.remove("pinging"); btn.classList.add("located"); setTimeout(() => btn.classList.remove("located"), 2600); }
-        if (status) {
-          status.textContent = `● LIVE FIX · ${name.toUpperCase()}`;
-          status.classList.add("show");
-          setTimeout(() => status.classList.remove("show"), 1900);
-        }
-        return;
-      }
-      if (Date.now() - started > 22000) {
-        clearInterval(this._locatePoll);
-        if (btn) btn.classList.remove("pinging");
-        if (status) { status.textContent = "NO LIVE FIX — SHOWING LAST KNOWN"; setTimeout(() => status.classList.remove("show"), 2400); }
-      }
-    }, 1500);
-  }
-
   _trailArchiveSlug(personId) {
     const ent = this._bestTrailEntity(personId) || "";
     if (/isaac/i.test(ent) || /isaac/i.test(personId || "")) return "isaac";
@@ -1925,7 +1844,6 @@ class SpaceCadetsPanel extends HTMLElement {
 
   _closeCrew() {
     const m = this.querySelector("#sc-modal");
-    clearInterval(this._locatePoll);
     this._lockAppScroll(false);
     if (!m) {
       this._modalOpen = false;
@@ -2108,8 +2026,6 @@ class SpaceCadetsPanel extends HTMLElement {
       if (diff > this._crewTrailDayCount) this._crewTrailDayCount = Math.min(diff, 3700);
     }
     await this._renderCrewTrail(true);
-    // Actively ask the device for a fresh GPS fix the moment the trail opens
-    this._locateNow(personId);
   }
 
   _bindTrailDayChips(root) {
@@ -2180,7 +2096,6 @@ class SpaceCadetsPanel extends HTMLElement {
                 <div class="sc-card-title" style="margin:0" id="sc-trail-name">${this._name(personId)}</div>
                 <div class="sc-modal-sub">TRAIL · ${this._name(trailEntity)}</div>
               </div>
-              <button type="button" class="sc-trail-locate" id="sc-trail-locate" title="Ping device for live location">${this._ic("target")}<span>LOCATE</span></button>
             </div>
           </div>
           <button class="sc-modal-x" id="sc-modal-x">✕</button>
@@ -2204,7 +2119,7 @@ class SpaceCadetsPanel extends HTMLElement {
             id="sc-trail-frame"
             class="sc-trail-frame"
             title="Crew location trail"
-            src="/local/spacecadets/trail-map.html?v=20260717h"
+            src="/local/spacecadets/trail-map.html?v=20260717g"
             loading="eager"
             referrerpolicy="no-referrer"
           ></iframe>
@@ -2221,11 +2136,9 @@ class SpaceCadetsPanel extends HTMLElement {
     m.querySelector("#sc-modal-bd").addEventListener("click", () => this._closeCrew());
     m.querySelector("#sc-modal-x").addEventListener("click", () => this._closeCrew());
     m.querySelector("#sc-trail-back").addEventListener("click", () => {
-      clearInterval(this._locatePoll);
       this._destroyTrailMap();
       this._renderCrew(true);
     });
-    m.querySelector("#sc-trail-locate")?.addEventListener("click", () => this._locateNow(this._crewTrailPerson));
     this._bindTrailDayChips(m);
     this._trailIframe = m.querySelector("#sc-trail-frame");
     this._trailIframeReady = false;
@@ -3203,20 +3116,6 @@ SpaceCadetsPanel.styles = `
 .sc-player-expand:hover, .sc-hero-expand:hover { background: rgba(124,58,237,0.6); border-color: rgba(103,232,249,0.6); box-shadow: 0 0 16px rgba(56,189,248,0.35); }
 .sc-hero-state-wrap { display: flex; align-items: center; gap: 10px; }
 .sc-hero-expand { position: static; }
-
-/* ---- Crew trail locate ---- */
-.sc-trail-locate {
-  display: inline-flex; align-items: center; gap: 7px; padding: 8px 14px; border-radius: 999px;
-  border: 1px solid rgba(103,232,249,0.5); background: rgba(24,10,48,0.6); color: #67e8f9;
-  cursor: pointer; font: inherit; font-weight: 700; letter-spacing: 0.08em; font-size: 12px;
-  transition: 0.16s ease; flex: 0 0 auto;
-}
-.sc-trail-locate svg { width: 16px; height: 16px; }
-.sc-trail-identity .sc-trail-locate { margin-left: auto; }
-.sc-trail-locate:hover { background: rgba(56,189,248,0.25); box-shadow: 0 0 18px rgba(56,189,248,0.4); color: #cffafe; }
-.sc-trail-locate.pinging { color: #a5f3fc; border-color: rgba(103,232,249,0.8); box-shadow: 0 0 20px rgba(56,189,248,0.5); }
-.sc-trail-locate.pinging svg { animation: mxspin 1.1s linear infinite; }
-.sc-trail-locate.located { color: #052e16; background: linear-gradient(135deg, #67e8f9, #38bdf8); border-color: rgba(103,232,249,0.9); box-shadow: 0 0 24px rgba(56,189,248,0.7); }
 
 /* ---- Settings ---- */
 .sc-setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }

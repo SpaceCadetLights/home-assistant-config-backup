@@ -1,0 +1,35 @@
+# Package: location_archive
+# Indefinite GPS trail storage for Space Cadets (daily JSON under www/).
+# Companion to recorder purge_keep_days: 99999 — this archive stays small and
+# trail-map-friendly even if the recorder DB is rebuilt.
+
+shell_command:
+  sc_location_append: >-
+    python3 /config/spacecadets/sc_location_archive.py append
+    {{ entity_id }} {{ latitude }} {{ longitude }} {{ timestamp }} {{ accuracy }}
+
+automation:
+  - id: sc_location_archive_phones
+    alias: "Space Cadets — archive phone GPS"
+    description: "Append iPhone GPS pings to long-term daily JSON archive"
+    mode: queued
+    max: 30
+    trigger:
+      - platform: state
+        entity_id:
+          - device_tracker.isaacs_iphone
+          - device_tracker.jareds_iphone
+    condition:
+      - condition: template
+        value_template: >-
+          {{ trigger.to_state is not none
+             and trigger.to_state.attributes.latitude is number
+             and trigger.to_state.attributes.longitude is number }}
+    action:
+      - action: shell_command.sc_location_append
+        data:
+          entity_id: "{{ trigger.entity_id }}"
+          latitude: "{{ trigger.to_state.attributes.latitude }}"
+          longitude: "{{ trigger.to_state.attributes.longitude }}"
+          timestamp: "{{ ((trigger.to_state.last_updated | as_timestamp) * 1000) | int }}"
+          accuracy: "{{ trigger.to_state.attributes.gps_accuracy | default(0, true) }}"

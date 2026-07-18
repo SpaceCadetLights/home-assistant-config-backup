@@ -5,7 +5,7 @@
  * Groupings mirror the real LaunchPad dashboards:
  *   Quick Deploy  -> light.build_space_lights, light.workshop_lights,
  *                    light.lounge_lights, cover.smart_blinds
- *   Areas         -> Build Space / Lounge / Stage / Nebula (WLED) / Workshop / Bathroom / Exterior
+ *   Areas         -> Build Space / Lounge / Stage / Art-WLED / Workshop / Bathroom / Exterior
  * Individual devices are the switch.* entities the physical setup uses;
  * group masters are the light.* group entities. PA Speakers is audio, not a light.
  */
@@ -20,20 +20,6 @@ class SpaceCadetsPanel extends HTMLElement {
     this._mediaPlayer = null; // locked player when auto-follow is off
     this._mediaAuto = true;   // scan all sources and promote whatever is playing
     this._modalOpen = false;
-    this._musicMode = this._loadMusicMode(); // "native" | "assistant"
-  }
-
-  _loadMusicMode() {
-    try {
-      const v = window.localStorage.getItem("sc_music_mode");
-      return v === "assistant" || v === "native" ? v : "native";
-    } catch (_) { return "native"; }
-  }
-
-  _setMusicMode(mode) {
-    this._musicMode = mode === "assistant" ? "assistant" : "native";
-    try { window.localStorage.setItem("sc_music_mode", this._musicMode); } catch (_) {}
-    this._paint();
   }
 
   set hass(hass) {
@@ -262,312 +248,6 @@ class SpaceCadetsPanel extends HTMLElement {
     return this._mediaDestinations().find((id) => this._avail(id)) || null;
   }
 
-  _ic(name) {
-    const I = {
-      prev: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2.2v12H6zM20 6v12l-9.2-6z"/></svg>',
-      next: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.8 6H18v12h-2.2zM4 6v12l9.2-6z"/></svg>',
-      play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.2v13.6a1 1 0 0 0 1.5.87l11-6.8a1 1 0 0 0 0-1.74l-11-6.8A1 1 0 0 0 8 5.2z"/></svg>',
-      pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6.5" y="5" width="3.6" height="14" rx="1.2"/><rect x="13.9" y="5" width="3.6" height="14" rx="1.2"/></svg>',
-      stop: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.4"/></svg>',
-      vol: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5v5h3.2L12 18.5v-13L7.2 9.5z" fill="currentColor" stroke="none"/><path d="M16 8.6a5 5 0 0 1 0 6.8M18.4 6a8.5 8.5 0 0 1 0 12"/></svg>',
-      mute: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5v5h3.2L12 18.5v-13L7.2 9.5z" fill="currentColor" stroke="none"/><path d="M16.5 9.5l5 5M21.5 9.5l-5 5"/></svg>',
-      expand: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>',
-      back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
-      close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>',
-      search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
-      folder: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5z"/></svg>',
-      disc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/></svg>',
-      playc: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 7.5v9a.8.8 0 0 0 1.2.7l7-4.5a.8.8 0 0 0 0-1.4l-7-4.5A.8.8 0 0 0 9 7.5z"/></svg>',
-      target: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/></svg>',
-    };
-    return I[name] || "";
-  }
-
-  _transportHtml(info) {
-    return `
-            <button data-act="media" data-service="media_previous_track" title="Previous" aria-label="Previous">${this._ic("prev")}</button>
-            <button class="big" data-act="media" data-service="${info.playing ? "media_pause" : "media_play"}" title="Play/Pause" aria-label="Play or pause">${info.playing ? this._ic("pause") : this._ic("play")}</button>
-            <button data-act="media" data-service="media_next_track" title="Next" aria-label="Next">${this._ic("next")}</button>
-            <button data-act="media" data-service="media_stop" title="Stop" aria-label="Stop">${this._ic("stop")}</button>
-            <button class="mute ${info.muted ? "on" : ""}" data-act="media" data-service="volume_mute" data-mute="${info.muted ? "0" : "1"}" title="Mute" aria-label="Mute">${info.muted ? this._ic("mute") : this._ic("vol")}</button>`;
-  }
-
-  /* ---------- Full-screen media experience (browse + play) ---------- */
-  _mediaTarget() {
-    const has = (id, bit) => ((this._attr(id, "supported_features", 0) || 0) & bit);
-    const p = this._activePlayer();
-    if (p && has(p, 131072)) return p; // BROWSE_MEDIA
-    for (const id of this._mediaDestinations()) {
-      if (has(id, 131072)) return id;
-    }
-    return p;
-  }
-
-  _openMediaExpand(el) {
-    if (this._expandOpen) return;
-    const m = this.querySelector("#sc-media-modal");
-    if (!m) return;
-    this._expandOpen = true;
-    this._lockAppScroll(true);
-    this._mediaStack = [];
-    this._browseCurrent = null;
-    const src = (el && (el.closest(".sc-player") || el.closest(".sc-col.hero"))) || el;
-    this._expandSrc = src;
-
-    m.innerHTML = `
-      <div class="sc-modal-backdrop" id="sc-mx-bd"></div>
-      <div class="sc-mx-panel" id="sc-mx-panel">
-        <div class="sc-mx-inner" id="sc-mx-inner">
-          <div class="sc-mx-topbar">
-            <div class="sc-mx-brand">${this._ic("disc")}<span>${this._musicMode === "assistant" ? "MUSIC ASSISTANT" : "MUSIC LIBRARY"}</span></div>
-            <button class="sc-mx-close" id="sc-mx-close" data-act="mx-close" title="Close" aria-label="Close">${this._ic("close")}</button>
-          </div>
-          <div class="sc-mx-stage" id="sc-mx-stage"></div>
-        </div>
-      </div>`;
-
-    const panel = m.querySelector("#sc-mx-panel");
-    const inner = m.querySelector("#sc-mx-inner");
-    m.classList.add("open");
-    this._flipIn(panel, inner, src);
-    m.querySelector("#sc-mx-bd").addEventListener("click", () => this._closeMediaExpand());
-    this._bind(panel);
-    this._initBrowsePane();
-  }
-
-  async _initBrowsePane() {
-    const stage = this.querySelector("#sc-mx-stage");
-    if (!stage) return;
-    if (this._musicMode === "native") { this._initNativeBrowse(stage); return; }
-    stage.innerHTML = `<div class="sc-mx-loading"><span class="sc-mx-spin">${this._ic("disc")}</span><span>Opening Music Assistant…</span></div>`;
-    try {
-      const url = await this._maIngressUrl();
-      if (!this._expandOpen) return;
-      if (!url) throw new Error("no ingress url");
-      const f = document.createElement("iframe");
-      f.className = "sc-mx-frame";
-      f.setAttribute("allow", "autoplay; fullscreen; encrypted-media; clipboard-write");
-      f.src = url;
-      stage.innerHTML = "";
-      stage.appendChild(f);
-      this._startIngressKeepalive();
-    } catch (e) {
-      if (this._expandOpen) this._initNativeBrowse(stage);
-    }
-  }
-
-  async _maIngressUrl() {
-    const unwrap = (r) => (r && r.data !== undefined ? r.data : r);
-    const info = unwrap(await this._hass.callWS({ type: "supervisor/api", endpoint: "/addons/d5369777_music_assistant/info", method: "get" }));
-    const url = info && (info.ingress_url || info.ingress_entry);
-    const sres = unwrap(await this._hass.callWS({ type: "supervisor/api", endpoint: "/ingress/session", method: "post" }));
-    const session = sres && sres.session;
-    if (session) {
-      this._maSession = session;
-      document.cookie = `ingress_session=${session}; path=/api/hassio_ingress/; SameSite=Strict`;
-    }
-    return url;
-  }
-
-  _startIngressKeepalive() {
-    this._stopIngressKeepalive();
-    this._ingressKeep = setInterval(() => {
-      if (!this._maSession) return;
-      this._hass.callWS({ type: "supervisor/api", endpoint: "/ingress/validate_session", method: "post", data: { session: this._maSession } }).catch(() => {});
-    }, 55000);
-  }
-
-  _stopIngressKeepalive() {
-    if (this._ingressKeep) { clearInterval(this._ingressKeep); this._ingressKeep = null; }
-  }
-
-  _initNativeBrowse(stage) {
-    this._mediaStack = [];
-    this._browseCurrent = null;
-    stage.innerHTML = `
-      <div class="sc-mx-browsewrap">
-        <div class="sc-mx-bar">
-          <button class="sc-mx-icbtn" id="sc-mx-back" data-act="mx-back" title="Back" aria-label="Back" disabled>${this._ic("back")}</button>
-          <div class="sc-mx-crumb" id="sc-mx-crumb">LIBRARY</div>
-          <div class="sc-mx-searchwrap">${this._ic("search")}<input id="sc-mx-search" class="sc-mx-search" placeholder="Filter this view…" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
-        </div>
-        <div class="sc-mx-grid" id="sc-mx-grid"></div>
-      </div>`;
-    this._bind(stage);
-    const search = stage.querySelector("#sc-mx-search");
-    if (search) search.addEventListener("input", () => this._filterBrowse(search.value));
-    this._loadBrowseNode(null);
-  }
-
-  _flipIn(panel, inner, src) {
-    try {
-      const t = panel.getBoundingClientRect();
-      const s = src ? src.getBoundingClientRect() : null;
-      if (!s || !t.width) { if (inner) inner.style.opacity = "1"; return; }
-      const dx = s.left - t.left, dy = s.top - t.top;
-      const sx = Math.max(0.05, s.width / t.width), sy = Math.max(0.05, s.height / t.height);
-      panel.style.transformOrigin = "top left";
-      panel.style.transition = "none";
-      panel.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`;
-      panel.style.borderRadius = "18px";
-      if (inner) inner.style.opacity = "0";
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        panel.style.transition = "transform .52s cubic-bezier(.22,1,.36,1), border-radius .52s ease";
-        panel.style.transform = "none";
-        panel.style.borderRadius = "";
-        if (inner) { inner.style.transition = "opacity .34s ease .14s"; inner.style.opacity = "1"; }
-      }));
-    } catch (_) { if (inner) inner.style.opacity = "1"; }
-  }
-
-  _closeMediaExpand() {
-    const m = this.querySelector("#sc-media-modal");
-    if (!m || !this._expandOpen) return;
-    this._expandOpen = false;
-    this._lockAppScroll(false);
-    this._stopIngressKeepalive();
-    const panel = m.querySelector("#sc-mx-panel");
-    const inner = m.querySelector("#sc-mx-inner");
-    const src = this._expandSrc;
-    m.classList.remove("open");
-    const done = () => { m.innerHTML = ""; };
-    try {
-      const t = panel.getBoundingClientRect();
-      const s = src ? src.getBoundingClientRect() : null;
-      if (!s) { done(); return; }
-      const dx = s.left - t.left, dy = s.top - t.top;
-      const sx = Math.max(0.05, s.width / t.width), sy = Math.max(0.05, s.height / t.height);
-      panel.style.transformOrigin = "top left";
-      panel.style.transition = "transform .4s cubic-bezier(.4,0,.2,1), border-radius .4s ease";
-      panel.style.borderRadius = "18px";
-      if (inner) { inner.style.transition = "opacity .22s ease"; inner.style.opacity = "0"; }
-      panel.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`;
-      let ended = false;
-      const fin = () => { if (ended) return; ended = true; done(); };
-      panel.addEventListener("transitionend", fin, { once: true });
-      setTimeout(fin, 460);
-    } catch (_) { done(); }
-  }
-
-  _expandHeaderHtml() {
-    const info = this._mediaInfo(this._activePlayer());
-    const target = this._mediaTarget();
-    const progress = info.dur && info.dur > 0 && info.pos != null ? Math.min(100, Math.round((info.pos / info.dur) * 100)) : null;
-    const sub = [info.artist, info.album, info.app, info.source].filter(Boolean).join(" · ") || "No media metadata";
-    return `
-      <button class="sc-mx-close" id="sc-mx-close" data-act="mx-close" title="Close" aria-label="Close">${this._ic("close")}</button>
-      <div class="sc-mx-art ${info.playing ? "live" : ""}" style="${info.art ? `background-image:url('${info.art}')` : ""}">${info.art ? "" : this._ic("disc")}</div>
-      <div class="sc-mx-info">
-        <div class="sc-mx-kicker">${(info.name || "—").toUpperCase()} · <em>${(info.state || "idle").toUpperCase()}</em></div>
-        <div class="sc-mx-title" title="${this._esc(info.title || "")}">${info.title || "Nothing playing"}</div>
-        <div class="sc-mx-sub">${this._esc(sub)}</div>
-        <div class="sc-transport big-row sc-mx-transport">${this._transportHtml(info)}</div>
-        <div class="sc-vol"><span>${this._ic("vol")}</span><input type="range" class="sc-slider" min="0" max="100" step="1" value="${info.volPct ?? 0}" data-act="volume" data-entity="${info.id || ""}" ${info.volPct == null ? "disabled" : ""}><em>${info.volPct != null ? info.volPct + "%" : "—"}</em></div>
-        ${progress != null ? `<div class="sc-progress"><div class="sc-progress-bar" style="width:${progress}%"></div><div class="sc-progress-times"><span>${this._fmtTime(info.pos)}</span><span>${this._fmtTime(info.dur)}</span></div></div>` : ""}
-        <div class="sc-mx-target">PLAYING TO · <strong>${this._esc(this._name(target) || "—")}</strong></div>
-      </div>`;
-  }
-
-  _refreshExpandHeader() {
-    const head = this.querySelector("#sc-mx-head");
-    if (!head) return;
-    const active = document.activeElement;
-    if (active && head.contains(active) && active.tagName === "INPUT") return;
-    head.innerHTML = this._expandHeaderHtml();
-    this._bind(head);
-  }
-
-  async _loadBrowseNode(node) {
-    const grid = this.querySelector("#sc-mx-grid");
-    const crumb = this.querySelector("#sc-mx-crumb");
-    const back = this.querySelector("#sc-mx-back");
-    const search = this.querySelector("#sc-mx-search");
-    if (!grid) return;
-    if (search) search.value = "";
-    grid.innerHTML = `<div class="sc-mx-loading"><span class="sc-mx-spin">${this._ic("disc")}</span><span>Loading…</span></div>`;
-    const target = this._mediaTarget();
-    try {
-      const msg = { type: "media_player/browse_media", entity_id: target };
-      if (node) { msg.media_content_id = node.id; msg.media_content_type = node.type; }
-      const res = await this._hass.callWS(msg);
-      if (!this._expandOpen) return;
-      // At the library root, hide non-music "media source" apps (Camera, TTS, iCloud, images, My media, Radio Browser)
-      if (this._mediaStack.length === 0 && Array.isArray(res.children)) {
-        res.children = res.children.filter((c) => c.media_class !== "app");
-      }
-      this._browseCurrent = res;
-      if (crumb) crumb.textContent = (this._mediaStack.map((n) => n.title).concat(res.title || "").filter(Boolean).join("  ›  ") || "LIBRARY").toUpperCase();
-      if (back) back.disabled = this._mediaStack.length === 0;
-      this._renderBrowseGrid(res);
-    } catch (e) {
-      grid.innerHTML = `<div class="sc-mx-empty">Can't browse this source.<br><small>${this._esc(String((e && e.message) || e))}</small></div>`;
-    }
-  }
-
-  _renderBrowseGrid(res) {
-    const grid = this.querySelector("#sc-mx-grid");
-    if (!grid) return;
-    const kids = res.children || [];
-    if (!kids.length) { grid.innerHTML = `<div class="sc-mx-empty">Nothing here yet.</div>`; return; }
-    grid.innerHTML = kids
-      .map((c, i) => {
-        const isDir = c.media_class === "directory" || c.media_class === "app";
-        const art = c.thumbnail ? `background-image:url('${c.thumbnail}')` : "";
-        const icon = isDir ? this._ic("folder") : this._ic("disc");
-        const act = c.can_expand ? "mx-open" : "mx-play";
-        const showPlay = c.can_expand && c.can_play;
-        const d = `data-mid="${this._esc(c.media_content_id)}" data-mtype="${this._esc(c.media_content_type)}" data-title="${this._esc(c.title)}"`;
-        return `<button class="sc-mx-item ${isDir ? "dir" : ""}" data-act="${act}" ${d} data-name="${this._esc((c.title || "").toLowerCase())}" style="--i:${Math.min(i, 32)}">
-          <span class="sc-mx-thumb ${c.thumbnail ? "" : "noart"}" style="${art}">${c.thumbnail ? "" : icon}${showPlay ? `<span class="sc-mx-play" data-act="mx-play" ${d}>${this._ic("playc")}</span>` : ""}</span>
-          <span class="sc-mx-name">${this._esc(c.title || "")}</span>
-        </button>`;
-      })
-      .join("");
-    this._bind(grid);
-  }
-
-  _browseInto(type, id, title) {
-    if (this._browseCurrent) {
-      this._mediaStack.push({ title: this._browseCurrent.title, type: this._browseCurrent.media_content_type, id: this._browseCurrent.media_content_id });
-    }
-    this._loadBrowseNode({ type, id, title });
-  }
-
-  _browseBack() {
-    if (!this._mediaStack.length) return;
-    const prev = this._mediaStack.pop();
-    const node = prev && prev.id !== "" ? { type: prev.type, id: prev.id, title: prev.title } : null;
-    this._loadBrowseNode(node);
-  }
-
-  _maPlay(type, id, title) {
-    const target = this._mediaTarget();
-    if (!target || !id) return;
-    this._call("media_player", "play_media", { media_content_id: id, media_content_type: type }, { entity_id: target });
-    this._mxToast(`▶  ${title || "Playing"}  →  ${this._name(target)}`);
-  }
-
-  _mxToast(msg) {
-    const p = this.querySelector("#sc-mx-panel");
-    if (!p) return;
-    let t = p.querySelector(".sc-mx-toast");
-    if (!t) { t = document.createElement("div"); t.className = "sc-mx-toast"; p.appendChild(t); }
-    t.textContent = msg;
-    requestAnimationFrame(() => t.classList.add("show"));
-    clearTimeout(this._mxToastT);
-    this._mxToastT = setTimeout(() => t && t.classList.remove("show"), 2400);
-  }
-
-  _filterBrowse(q) {
-    const grid = this.querySelector("#sc-mx-grid");
-    if (!grid) return;
-    const s = (q || "").trim().toLowerCase();
-    grid.querySelectorAll(".sc-mx-item").forEach((el) => {
-      const n = el.dataset.name || "";
-      el.style.display = !s || n.includes(s) ? "" : "none";
-    });
-  }
-
   _renderPlayerCard(info, { compact = false } = {}) {
     const progress =
       info.dur && info.dur > 0 && info.pos != null
@@ -575,8 +255,7 @@ class SpaceCadetsPanel extends HTMLElement {
         : null;
     const subBits = [info.artist, info.album, info.app, info.source].filter(Boolean);
     return `
-      <div class="sc-player ${compact ? "compact" : ""} ${info.playing ? "live" : ""}" data-act="expand-player" role="button" tabindex="0" title="Tap to open full player">
-        <button class="sc-player-expand" data-act="expand-player" title="Open full player" aria-label="Expand player">${this._ic("expand")}</button>
+      <div class="sc-player ${compact ? "compact" : ""} ${info.playing ? "live" : ""}">
         <div class="sc-player-art" style="${info.art ? `background-image:url('${info.art}')` : ""}">
           ${info.art ? "" : "♫"}
         </div>
@@ -588,7 +267,12 @@ class SpaceCadetsPanel extends HTMLElement {
           <div class="sc-player-track">${info.title}</div>
           <div class="sc-player-artist">${subBits.join(" · ") || "No media metadata"}</div>
 
-          <div class="sc-transport big-row">${this._transportHtml(info)}
+          <div class="sc-transport big-row">
+            <button data-act="media" data-service="media_previous_track" title="Previous">⏮</button>
+            <button class="big" data-act="media" data-service="${info.playing ? "media_pause" : "media_play"}" title="Play/Pause">${info.playing ? "⏸" : "▶"}</button>
+            <button data-act="media" data-service="media_next_track" title="Next">⏭</button>
+            <button data-act="media" data-service="media_stop" title="Stop">⏹</button>
+            <button data-act="media" data-service="volume_mute" data-mute="${info.muted ? "0" : "1"}" title="Mute">${info.muted ? "🔇" : "🔈"}</button>
           </div>
 
           <div class="sc-vol">
@@ -701,8 +385,6 @@ class SpaceCadetsPanel extends HTMLElement {
       </div>
 
       <div class="sc-modal-root" id="sc-modal"></div>
-      <div class="sc-modal-root" id="sc-picker-modal"></div>
-      <div class="sc-modal-root sc-media-modal" id="sc-media-modal"></div>
       <div class="sc-modal-root sc-radar-modal-root" id="sc-radar-modal"></div>
     `;
     this.appendChild(wrap);
@@ -761,8 +443,7 @@ class SpaceCadetsPanel extends HTMLElement {
 
   /* ---------- greeting (intelligent) ---------- */
   _crewIds() {
-    // Household = Isaac + Jared only. person.space_cadets is the shared login, not a third cadet.
-    return ["person.isaac_norris", "person.jared_lee_lyons"].filter((id) => this._s(id));
+    return ["person.space_cadets", "person.isaac_norris", "person.jared_lee_lyons"].filter((id) => this._s(id));
   }
 
   _greeting() {
@@ -804,6 +485,7 @@ class SpaceCadetsPanel extends HTMLElement {
     const map = {
       "person.isaac_norris": "sensor.isaacs_iphone_14_geocoded_location",
       "person.jared_lee_lyons": "sensor.jareds_iphone_geocoded_location",
+      "person.space_cadets": "sensor.spaces_macbook_pro_geocoded_location",
     };
     const sid = map[personId];
     if (!sid) return "";
@@ -866,7 +548,6 @@ class SpaceCadetsPanel extends HTMLElement {
       if (this._crewTrailPerson) this._refreshCrewTrailHeader();
       else this._renderCrew(false);
     }
-    if (this._expandOpen) this._refreshExpandHeader();
   }
 
   /* ---------- OVERVIEW ---------- */
@@ -906,13 +587,15 @@ class SpaceCadetsPanel extends HTMLElement {
               <div class="sc-hero-title">${info.title || "Nothing playing"}</div>
               <div class="sc-hero-status">${[info.artist, info.album, info.app || info.source].filter(Boolean).join(" · ") || (info.state || "idle").toUpperCase()}</div>
             </div>
-            <div class="sc-hero-state-wrap">
-              <em class="sc-hero-state">${(info.state || "idle").toUpperCase()}</em>
-              <button class="sc-hero-expand" data-act="expand-player" title="Open full player" aria-label="Expand player">${this._ic("expand")}</button>
-            </div>
+            <em class="sc-hero-state">${(info.state || "idle").toUpperCase()}</em>
           </div>
           <div class="sc-hero-controls">
-            <div class="sc-transport big-row">${this._transportHtml(info)}
+            <div class="sc-transport big-row">
+              <button data-act="media" data-service="media_previous_track" title="Previous">⏮</button>
+              <button class="big" data-act="media" data-service="${info.playing ? "media_pause" : "media_play"}" title="Play/Pause">${info.playing ? "⏸" : "▶"}</button>
+              <button data-act="media" data-service="media_next_track" title="Next">⏭</button>
+              <button data-act="media" data-service="media_stop" title="Stop">⏹</button>
+              <button data-act="media" data-service="volume_mute" data-mute="${info.muted ? "0" : "1"}" title="Mute">${info.muted ? "🔇" : "🔈"}</button>
             </div>
             <div class="sc-vol sc-hero-vol">
               <span>VOL</span>
@@ -1098,6 +781,12 @@ class SpaceCadetsPanel extends HTMLElement {
         ["switch.dmx", "DMX", "toggle"],
         ["switch.p_a_speakers", "PA Speakers", "audio"],
       ]],
+      ["Art / WLED", "light.trillium", [
+        ["select.trillium_color_palette", "Palette", "select"],
+        ["select.trillium_preset", "Preset", "select"],
+        ["number.trillium_speed", "Speed", "number"],
+        ["switch.trillium_sync_send", "Sync Send", "toggle"],
+      ]],
       ["Workshop", "light.workshop_lights", [
         ["switch.basement_light", "Basement", "toggle"],
         ["switch.3d_printer_light", "3D Printer", "toggle"],
@@ -1114,7 +803,6 @@ class SpaceCadetsPanel extends HTMLElement {
     ];
 
     return `
-      ${this._renderNebula()}
       <div class="sc-full glass">
         <div class="sc-card-title">LIGHTING DECK · REAL ZONE GROUPINGS</div>
         <div class="sc-zone-grid">
@@ -1130,224 +818,6 @@ class SpaceCadetsPanel extends HTMLElement {
                 ${ents.map((e) => this._renderControl(e)).join("")}
               </div>
             </div>`).join("")}
-        </div>
-      </div>`;
-  }
-
-  _esc(s) {
-    return String(s ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
-  _ensureWledPalettes() {
-    if (this._wledPalettes || this._wledPalLoading) return;
-    this._wledPalLoading = true;
-    fetch("/local/spacecadets/wled-palettes.json?t=" + Date.now(), { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : {}))
-      .then((j) => {
-        this._wledPalettes = j || {};
-        this._wledPalLoading = false;
-        if (this._tab === "lighting" && !this._pickerOpen) this._paint();
-      })
-      .catch(() => {
-        this._wledPalettes = {};
-        this._wledPalLoading = false;
-      });
-  }
-
-  _openEffectPicker() {
-    const st = this._s("light.trillium");
-    const effects = (st?.attributes?.effect_list) || [];
-    const cur = st?.attributes?.effect || "";
-    this._renderPicker({ title: "NEBULA · EFFECT", kind: "effect", options: effects, current: cur });
-  }
-
-  async _openPalettePicker() {
-    const ent = "select.trillium_color_palette";
-    const options = this._attr(ent, "options", []) || [];
-    const cur = this._state(ent);
-    await this._loadWledPalettesAsync();
-    this._renderPicker({
-      title: "NEBULA · PALETTE",
-      kind: "palette",
-      options,
-      current: cur,
-      gradients: this._wledPalettes || {},
-    });
-  }
-
-  _loadWledPalettesAsync() {
-    if (this._wledPalettes) return Promise.resolve(this._wledPalettes);
-    return fetch("/local/spacecadets/wled-palettes.json?t=" + Date.now(), { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : {}))
-      .then((j) => (this._wledPalettes = j || {}))
-      .catch(() => (this._wledPalettes = {}));
-  }
-
-  _renderPicker({ title, kind, options, current, gradients }) {
-    const m = this.querySelector("#sc-picker-modal");
-    if (!m) return;
-    this._pickerOpen = true;
-    this._lockAppScroll(true);
-
-    const grid = options
-      .map((o) => {
-        const active = o === current ? "active" : "";
-        if (kind === "palette") {
-          const g = (gradients && gradients[o]) || "linear-gradient(90deg,#a855f7,#22d3ee)";
-          return `<button type="button" class="sc-pick-item palette ${active}" data-pick="${this._esc(o)}">
-            <span class="sc-pick-sw" style="background:${g}"></span>
-            <span class="sc-pick-name">${this._esc(o)}</span>
-          </button>`;
-        }
-        return `<button type="button" class="sc-pick-item ${active}" data-pick="${this._esc(o)}">
-          <span class="sc-pick-name">${this._esc(o)}</span>
-        </button>`;
-      })
-      .join("");
-
-    m.innerHTML = `
-      <div class="sc-modal-backdrop" id="sc-pick-bd"></div>
-      <div class="sc-modal sc-pick-modal">
-        <div class="sc-modal-head">
-          <div>
-            <div class="sc-card-title" style="margin:0">${title}</div>
-            <div class="sc-modal-sub">${options.length} OPTIONS · TAP TO APPLY</div>
-          </div>
-          <button class="sc-modal-x" id="sc-pick-x">✕</button>
-        </div>
-        <input type="text" class="sc-pick-search" id="sc-pick-search" placeholder="Search…" autocomplete="off" autocapitalize="off" spellcheck="false">
-        <div class="sc-pick-grid ${kind}" id="sc-pick-grid">${grid}</div>
-      </div>`;
-
-    const close = () => this._closePicker();
-    m.querySelector("#sc-pick-bd").addEventListener("click", close);
-    m.querySelector("#sc-pick-x").addEventListener("click", close);
-
-    const search = m.querySelector("#sc-pick-search");
-    search.addEventListener("input", () => {
-      const q = search.value.trim().toLowerCase();
-      m.querySelectorAll(".sc-pick-item").forEach((el) => {
-        const name = (el.dataset.pick || "").toLowerCase();
-        el.style.display = !q || name.includes(q) ? "" : "none";
-      });
-    });
-
-    m.querySelectorAll("[data-pick]").forEach((el) => {
-      el.addEventListener("click", () => {
-        const val = el.dataset.pick;
-        this._applyPick(kind, val);
-        m.querySelectorAll(".sc-pick-item").forEach((b) => b.classList.toggle("active", b.dataset.pick === val));
-        const sub = m.querySelector(".sc-modal-sub");
-        if (sub) sub.textContent = `APPLIED · ${val}`;
-        setTimeout(close, 220);
-      });
-    });
-
-    requestAnimationFrame(() => requestAnimationFrame(() => m.classList.add("open")));
-    // scroll active into view
-    setTimeout(() => {
-      const act = m.querySelector(".sc-pick-item.active");
-      if (act) act.scrollIntoView({ block: "center" });
-    }, 140);
-  }
-
-  _applyPick(kind, val) {
-    if (kind === "effect") this._call("light", "turn_on", { effect: val }, { entity_id: "light.trillium" });
-    else if (kind === "palette") this._selectOption("select.trillium_color_palette", val);
-  }
-
-  _closePicker() {
-    const m = this.querySelector("#sc-picker-modal");
-    this._pickerOpen = false;
-    this._lockAppScroll(false);
-    if (!m) return;
-    m.classList.remove("open");
-    setTimeout(() => {
-      if (!this._pickerOpen) m.innerHTML = "";
-    }, 380);
-  }
-
-  _renderNebula() {
-    const light = "light.trillium";
-    const st = this._s(light);
-    const on = this._on(light);
-    const effects = (st?.attributes?.effect_list) || [];
-    const curEffect = st?.attributes?.effect || "";
-    const bri = st?.attributes?.brightness;
-    const briPct = bri != null ? Math.round((bri / 255) * 100) : on ? 100 : 0;
-
-    const paletteEnt = "select.trillium_color_palette";
-    const palettes = this._attr(paletteEnt, "options", []) || [];
-    const curPalette = this._state(paletteEnt);
-
-    const speed = this._state("number.trillium_speed", 0);
-    const distortion = this._state("number.trillium_intensity", 0);
-
-    this._ensureWledPalettes();
-    const curGrad =
-      (this._wledPalettes && this._wledPalettes[curPalette]) ||
-      "linear-gradient(90deg,#a855f7,#22d3ee)";
-
-    const subtitle = on
-      ? [curEffect || "CUSTOM", curPalette && curPalette !== "unavailable" ? curPalette : ""]
-          .filter(Boolean)
-          .join(" · ")
-      : "OFFLINE";
-
-    return `
-      <div class="sc-full glass sc-nebula ${on ? "live" : ""}">
-        <div class="sc-nebula-aura" aria-hidden="true"></div>
-        <div class="sc-nebula-inner">
-          <div class="sc-nebula-head">
-            <div class="sc-nebula-brand">
-              <span class="sc-nebula-orb"></span>
-              <div>
-                <div class="sc-card-title" style="margin:0">NEBULA</div>
-                <div class="sc-nebula-sub">${this._esc(subtitle)}</div>
-              </div>
-            </div>
-            <button class="sc-nebula-power ${on ? "on" : ""}" data-act="toggle" data-entity="${light}">
-              <span class="dot"></span>${on ? "ON" : "OFF"}
-            </button>
-          </div>
-
-          <div class="sc-nebula-grid">
-            <div class="sc-nebula-field wide">
-              <span class="sc-nebula-lbl">EFFECT <em>${effects.length} FX</em></span>
-              <button type="button" class="sc-nebula-pick" data-act="pick-effect" ${effects.length ? "" : "disabled"}>
-                <span class="txt">${this._esc(curEffect || "—")}</span>
-                <span class="chev">GRID ▸</span>
-              </button>
-            </div>
-
-            <div class="sc-nebula-field wide">
-              <span class="sc-nebula-lbl">PALETTE <em>${palettes.length}</em></span>
-              <button type="button" class="sc-nebula-pick palette" data-act="pick-palette" ${palettes.length ? "" : "disabled"}>
-                <span class="sw" style="background:${curGrad}"></span>
-                <span class="txt">${this._esc(curPalette && curPalette !== "unavailable" ? curPalette : "—")}</span>
-                <span class="chev">GRID ▸</span>
-              </button>
-            </div>
-
-            <div class="sc-nebula-field">
-              <span class="sc-nebula-lbl">SPEED <em class="sc-slider-val">${speed}</em></span>
-              <input type="range" class="sc-slider nebula speed" min="0" max="255" step="1" value="${speed}" data-act="number" data-entity="number.trillium_speed">
-            </div>
-
-            <div class="sc-nebula-field">
-              <span class="sc-nebula-lbl">DISTORTION <em class="sc-slider-val">${distortion}</em></span>
-              <input type="range" class="sc-slider nebula distort" min="0" max="255" step="1" value="${distortion}" data-act="number" data-entity="number.trillium_intensity">
-            </div>
-
-            <div class="sc-nebula-field wide">
-              <span class="sc-nebula-lbl">BRIGHTNESS <em class="sc-slider-val">${briPct}%</em></span>
-              <input type="range" class="sc-slider nebula bright" min="0" max="100" step="1" value="${briPct}" data-act="bright" data-entity="${light}">
-            </div>
-          </div>
         </div>
       </div>`;
   }
@@ -1533,26 +1003,7 @@ class SpaceCadetsPanel extends HTMLElement {
   /* ---------- SYSTEM ---------- */
   _htmlSystem() {
     const upd = (id) => (this._state(id) === "on" ? "UPDATE READY" : "CURRENT");
-    const mode = this._musicMode;
     return `
-      <div class="sc-full glass">
-        <div class="sc-card-title">PREFERENCES</div>
-        <div class="sc-setting">
-          <div class="sc-setting-info">
-            <div class="sc-setting-title">MUSIC BROWSER STYLE</div>
-            <div class="sc-setting-sub">How the full-screen player browses your library</div>
-          </div>
-          <div class="sc-seg">
-            <button class="sc-seg-btn ${mode === "native" ? "on" : ""}" data-act="music-mode" data-mode="native">
-              <strong>Native</strong><em>Space Cadets grid</em>
-            </button>
-            <button class="sc-seg-btn ${mode === "assistant" ? "on" : ""}" data-act="music-mode" data-mode="assistant">
-              <strong>Assistant</strong><em>Music Assistant UI</em>
-            </button>
-          </div>
-        </div>
-      </div>
-
       <div class="sc-full glass">
         <div class="sc-card-title">SHIP SYSTEMS</div>
         <div class="sc-media-grid">
@@ -1667,148 +1118,17 @@ class SpaceCadetsPanel extends HTMLElement {
     return phone || trackers[0] || personId;
   }
 
-  _notifyServiceFor(personId) {
-    const ent = this._bestTrailEntity(personId);
-    if (ent && ent.startsWith("device_tracker.")) {
-      const slug = ent.split(".")[1];
-      if (this._hass?.services?.notify?.["mobile_app_" + slug]) return "mobile_app_" + slug;
-    }
-    // Fallback: known phones by person
-    const known = {
-      "person.isaac_norris": "mobile_app_isaacs_iphone_14",
-      "person.jared_lee_lyons": "mobile_app_jareds_iphone",
-    };
-    const svc = known[personId];
-    if (svc && this._hass?.services?.notify?.[svc]) return svc;
-    return null;
-  }
-
-  _requestLocation(personId) {
-    const svc = this._notifyServiceFor(personId);
-    if (!svc) return false;
-    try {
-      this._call("notify", svc, { message: "request_location_update" });
-      return true;
-    } catch (_) { return false; }
-  }
-
-  _trackerFix(ent) {
-    const s = this._s(ent);
-    if (!s) return "";
-    const a = s.attributes || {};
-    return `${s.last_updated}|${a.latitude}|${a.longitude}`;
-  }
-
-  _locateNow(personId) {
-    const name = this._name(personId);
-    const ent = this._bestTrailEntity(personId);
-    const ok = this._requestLocation(personId);
-    const status = this.querySelector("#sc-trail-status");
-    const btn = this.querySelector("#sc-trail-locate");
-    if (btn) { btn.classList.remove("located"); btn.classList.toggle("pinging", ok); }
-    if (status) {
-      status.textContent = ok ? `PINGING ${(name || "DEVICE").toUpperCase()}'S DEVICE…` : "LIVE PING UNAVAILABLE FOR THIS CREW";
-      status.classList.add("show");
-    }
-    if (!ok) {
-      setTimeout(() => { status && status.classList.remove("show"); btn && btn.classList.remove("pinging"); }, 2600);
-      return;
-    }
-    // Make sure we're viewing today so the fresh fix appears
-    const todayKey = this._localDateKey(new Date());
-    if (this._crewTrailDayKey !== todayKey) { this._crewTrailDayKey = todayKey; this._refreshTrailDayChips(); }
-
-    const baseFix = this._trackerFix(ent);
-    const started = Date.now();
-    clearInterval(this._locatePoll);
-    this._locatePoll = setInterval(async () => {
-      if (!this._crewTrailPerson) { clearInterval(this._locatePoll); return; }
-      const s = this._s(ent);
-      const curFix = this._trackerFix(ent);
-      const changed = curFix && curFix !== baseFix && s?.attributes?.latitude != null;
-      if (changed) {
-        clearInterval(this._locatePoll);
-        await this._loadCrewTrailDay({ reuseMap: true });
-        // Zoom + center on the fresh point with a live blue ring
-        this._postTrailMap({ type: "sc-trail-live", lat: s.attributes.latitude, lon: s.attributes.longitude });
-        if (btn) { btn.classList.remove("pinging"); btn.classList.add("located"); setTimeout(() => btn.classList.remove("located"), 2600); }
-        if (status) {
-          status.textContent = `● LIVE FIX · ${name.toUpperCase()}`;
-          status.classList.add("show");
-          setTimeout(() => status.classList.remove("show"), 1900);
-        }
-        return;
-      }
-      if (Date.now() - started > 22000) {
-        clearInterval(this._locatePoll);
-        if (btn) btn.classList.remove("pinging");
-        if (status) { status.textContent = "NO LIVE FIX — SHOWING LAST KNOWN"; setTimeout(() => status.classList.remove("show"), 2400); }
-      }
-    }, 1500);
-  }
-
-  _trailArchiveSlug(personId) {
-    const ent = this._bestTrailEntity(personId) || "";
-    if (/isaac/i.test(ent) || /isaac/i.test(personId || "")) return "isaac";
-    if (/jared/i.test(ent) || /jared/i.test(personId || "")) return "jared";
-    return null;
-  }
-
-  async _loadTrailArchiveIndex(slug) {
-    if (!slug) return null;
-    if (this._trailArchiveIndex?.[slug]) return this._trailArchiveIndex[slug];
-    try {
-      const res = await fetch(`/local/spacecadets/location-history/index.json?t=${Date.now()}`, {
-        cache: "no-store",
-      });
-      if (!res.ok) return null;
-      const all = await res.json();
-      this._trailArchiveIndex = all || {};
-      return all?.[slug] || null;
-    } catch (e) {
-      console.warn("trail archive index", e);
-      return null;
-    }
-  }
-
-  async _fetchArchiveDayPoints(slug, dayKey) {
-    if (!slug || !dayKey) return [];
-    try {
-      const res = await fetch(
-        `/local/spacecadets/location-history/${encodeURIComponent(slug)}/${encodeURIComponent(dayKey)}.json?t=${Date.now()}`,
-        { cache: "no-store" }
-      );
-      if (!res.ok) return [];
-      const rows = await res.json();
-      if (!Array.isArray(rows)) return [];
-      return rows
-        .map((r) => {
-          const lat = Number(r[0]);
-          const lon = Number(r[1]);
-          const t = Number(r[2]);
-          if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(t)) return null;
-          return { lat, lon, t, state: "archive" };
-        })
-        .filter(Boolean)
-        .sort((a, b) => a.t - b.t);
-    } catch (_) {
-      return [];
-    }
-  }
-
   _trailDayWindows() {
-    // Scrollable day chips: today → older. Default ~1 year; Older → adds another year.
-    const count = Math.max(30, this._crewTrailDayCount || 400);
+    // Scrollable day chips: today → older (default 90 days; tap "OLDER" to extend)
+    const count = Math.max(14, this._crewTrailDayCount || 90);
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const daysWith = this._trailDaysWithData || {};
     const days = [];
     for (let i = 0; i < count; i++) {
       const dayStart = new Date(startOfToday);
       dayStart.setDate(dayStart.getDate() - i);
       const dayEnd = new Date(dayStart);
       dayEnd.setDate(dayEnd.getDate() + 1);
-      const key = this._localDateKey(dayStart);
       let label;
       if (i === 0) label = "TODAY";
       else if (i === 1) label = "YESTERDAY";
@@ -1818,12 +1138,10 @@ class SpaceCadetsPanel extends HTMLElement {
           .toUpperCase();
       }
       days.push({
-        key,
+        key: this._localDateKey(dayStart),
         label,
         start: dayStart,
         end: i === 0 ? now : dayEnd,
-        hasData: !!daysWith[key],
-        count: daysWith[key] || 0,
       });
     }
     return days;
@@ -1833,21 +1151,6 @@ class SpaceCadetsPanel extends HTMLElement {
     const days = this._trailDayWindows();
     const key = this._crewTrailDayKey;
     return days.find((d) => d.key === key) || days[0];
-  }
-
-  _dedupeTrailPoints(pts) {
-    const cleaned = [];
-    for (const p of pts) {
-      const prev = cleaned[cleaned.length - 1];
-      if (!prev) {
-        cleaned.push(p);
-        continue;
-      }
-      const d = this._haversineM(prev.lat, prev.lon, p.lat, p.lon);
-      if (d < 12 && p.t - prev.t < 3 * 60 * 1000) cleaned[cleaned.length - 1] = p;
-      else cleaned.push(p);
-    }
-    return cleaned;
   }
 
   async _fetchTrailPoints(entityId, start, end) {
@@ -1879,23 +1182,22 @@ class SpaceCadetsPanel extends HTMLElement {
       pts.push({ lat, lon, t, state: r.state });
     }
     pts.sort((a, b) => a.t - b.t);
-    return this._dedupeTrailPoints(pts);
-  }
-
-  async _fetchTrailPointsMerged(personId, day) {
-    const entityId = this._bestTrailEntity(personId);
-    const slug = this._trailArchiveSlug(personId);
-    const [archivePts, histPts] = await Promise.all([
-      slug ? this._fetchArchiveDayPoints(slug, day.key) : Promise.resolve([]),
-      this._fetchTrailPoints(entityId, day.start, day.end),
-    ]);
-    // Merge by timestamp; prefer denser combined set
-    const byT = new Map();
-    for (const p of [...archivePts, ...histPts]) {
-      const k = Math.round(p.t / 1000);
-      if (!byT.has(k)) byT.set(k, p);
+    // Dedupe near-identical consecutive points
+    const cleaned = [];
+    for (const p of pts) {
+      const prev = cleaned[cleaned.length - 1];
+      if (!prev) {
+        cleaned.push(p);
+        continue;
+      }
+      const d = this._haversineM(prev.lat, prev.lon, p.lat, p.lon);
+      if (d < 12 && p.t - prev.t < 3 * 60 * 1000) {
+        cleaned[cleaned.length - 1] = p; // keep newest
+      } else {
+        cleaned.push(p);
+      }
     }
-    return this._dedupeTrailPoints([...byT.values()].sort((a, b) => a.t - b.t));
+    return cleaned;
   }
 
   _haversineM(lat1, lon1, lat2, lon2) {
@@ -1925,7 +1227,6 @@ class SpaceCadetsPanel extends HTMLElement {
 
   _closeCrew() {
     const m = this.querySelector("#sc-modal");
-    clearInterval(this._locatePoll);
     this._lockAppScroll(false);
     if (!m) {
       this._modalOpen = false;
@@ -1949,77 +1250,11 @@ class SpaceCadetsPanel extends HTMLElement {
       try {
         this._trailMap.remove();
       } catch (_) {}
+      this._trailMap = null;
+      this._trailLayer = null;
+      this._trailTiles = null;
+      this._trailFitBounds = null;
     }
-    this._trailMap = null;
-    this._trailLayer = null;
-    this._trailTiles = null;
-    this._trailFitBounds = null;
-    this._trailIframe = null;
-    this._trailIframeReady = false;
-    if (this._trailMsgHandler) {
-      window.removeEventListener("message", this._trailMsgHandler);
-      this._trailMsgHandler = null;
-    }
-  }
-
-  _postTrailMap(msg) {
-    const iframe = this._trailIframe || this.querySelector("#sc-trail-frame");
-    if (!iframe?.contentWindow) return false;
-    try {
-      iframe.contentWindow.postMessage(msg, "*");
-      return true;
-    } catch (e) {
-      console.warn(e);
-      return false;
-    }
-  }
-
-  _ensureTrailIframe() {
-    const wrap = this.querySelector("#sc-trail-map-wrap");
-    if (!wrap) return null;
-    let iframe = wrap.querySelector("#sc-trail-frame");
-    if (iframe && this._trailIframe === iframe) return iframe;
-
-    wrap.innerHTML = `
-      <iframe
-        id="sc-trail-frame"
-        class="sc-trail-frame"
-        title="Crew location trail"
-        src="/local/spacecadets/trail-map.html?v=20260717g"
-        loading="eager"
-        referrerpolicy="no-referrer"
-      ></iframe>
-      <div class="sc-trail-status show" id="sc-trail-status">LOADING MAP…</div>`;
-
-    iframe = wrap.querySelector("#sc-trail-frame");
-    this._trailIframe = iframe;
-    this._trailIframeReady = false;
-
-    if (!this._trailMsgHandler) {
-      this._trailMsgHandler = (ev) => {
-        if (ev.data?.type === "sc-trail-ready") {
-          this._trailIframeReady = true;
-          if (this._trailPendingMsg) {
-            this._postTrailMap(this._trailPendingMsg);
-            this._trailPendingMsg = null;
-          }
-          this._postTrailMap({ type: "sc-trail-resize" });
-        }
-      };
-      window.addEventListener("message", this._trailMsgHandler);
-    }
-
-    iframe.addEventListener("load", () => {
-      // Fallback if ready message raced
-      this._trailIframeReady = true;
-      if (this._trailPendingMsg) {
-        this._postTrailMap(this._trailPendingMsg);
-        this._trailPendingMsg = null;
-      }
-      this._postTrailMap({ type: "sc-trail-resize" });
-    });
-
-    return iframe;
   }
 
   _renderCrew(animateIn = false) {
@@ -2069,7 +1304,7 @@ class SpaceCadetsPanel extends HTMLElement {
             })
             .join("")}
         </div>
-        <div class="sc-modal-foot">LOCATION HISTORY · INDEFINITE ARCHIVE</div>
+        <div class="sc-modal-foot">LOCATION HISTORY · TAP A DAY ON THE MAP</div>
       </div>`;
     m.querySelector("#sc-modal-bd").addEventListener("click", () => this._closeCrew());
     m.querySelector("#sc-modal-x").addEventListener("click", () => this._closeCrew());
@@ -2091,25 +1326,11 @@ class SpaceCadetsPanel extends HTMLElement {
 
   async _openCrewTrail(personId) {
     this._crewTrailPerson = personId;
-    this._crewTrailDayCount = 400; // ~13 months of day chips
+    this._crewTrailDayCount = 90;
     this._crewTrailDayKey = this._localDateKey(new Date());
     this._crewTrailCache = {};
     this._trailTileFallback = false;
-    this._trailDaysWithData = {};
-    const slug = this._trailArchiveSlug(personId);
-    const idx = await this._loadTrailArchiveIndex(slug);
-    if (idx?.days) this._trailDaysWithData = { ...idx.days };
-    // Extend chip window to earliest archived day if older than default
-    if (idx?.day_list?.length) {
-      const earliest = idx.day_list[idx.day_list.length - 1];
-      const earliestDate = new Date(earliest + "T12:00:00");
-      const today = new Date();
-      const diff = Math.ceil((today - earliestDate) / 86400000) + 5;
-      if (diff > this._crewTrailDayCount) this._crewTrailDayCount = Math.min(diff, 3700);
-    }
     await this._renderCrewTrail(true);
-    // Actively ask the device for a fresh GPS fix the moment the trail opens
-    this._locateNow(personId);
   }
 
   _bindTrailDayChips(root) {
@@ -2130,7 +1351,7 @@ class SpaceCadetsPanel extends HTMLElement {
     const more = root.querySelector("#sc-trail-more-days");
     if (more) {
       more.addEventListener("click", () => {
-        this._crewTrailDayCount = (this._crewTrailDayCount || 400) + 365;
+        this._crewTrailDayCount = (this._crewTrailDayCount || 90) + 60;
         this._refreshTrailDayChips();
       });
     }
@@ -2145,10 +1366,10 @@ class SpaceCadetsPanel extends HTMLElement {
       days
         .map(
           (d) => `
-        <button type="button" class="sc-trail-day-chip ${d.key === key ? "active" : ""} ${d.hasData ? "has-data" : ""}" data-day-key="${d.key}" title="${d.count ? d.count + " pings" : "no archived pings"}">${d.label}</button>`
+        <button type="button" class="sc-trail-day-chip ${d.key === key ? "active" : ""}" data-day-key="${d.key}">${d.label}</button>`
         )
         .join("") +
-      `<button type="button" class="sc-trail-day-chip more" id="sc-trail-more-days">+1 YEAR →</button>`;
+      `<button type="button" class="sc-trail-day-chip more" id="sc-trail-more-days">OLDER →</button>`;
     this._bindTrailDayChips(this.querySelector("#sc-modal") || this);
   }
 
@@ -2180,7 +1401,6 @@ class SpaceCadetsPanel extends HTMLElement {
                 <div class="sc-card-title" style="margin:0" id="sc-trail-name">${this._name(personId)}</div>
                 <div class="sc-modal-sub">TRAIL · ${this._name(trailEntity)}</div>
               </div>
-              <button type="button" class="sc-trail-locate" id="sc-trail-locate" title="Ping device for live location">${this._ic("target")}<span>LOCATE</span></button>
             </div>
           </div>
           <button class="sc-modal-x" id="sc-modal-x">✕</button>
@@ -2192,23 +1412,16 @@ class SpaceCadetsPanel extends HTMLElement {
             ${days
               .map(
                 (d) => `
-              <button type="button" class="sc-trail-day-chip ${d.key === day.key ? "active" : ""} ${d.hasData ? "has-data" : ""}" data-day-key="${d.key}" title="${d.count ? d.count + " pings" : "no archived pings"}">${d.label}</button>`
+              <button type="button" class="sc-trail-day-chip ${d.key === day.key ? "active" : ""}" data-day-key="${d.key}">${d.label}</button>`
               )
               .join("")}
-            <button type="button" class="sc-trail-day-chip more" id="sc-trail-more-days">+1 YEAR →</button>
+            <button type="button" class="sc-trail-day-chip more" id="sc-trail-more-days">OLDER →</button>
           </div>
         </div>
 
         <div class="sc-trail-map-wrap" id="sc-trail-map-wrap">
-          <iframe
-            id="sc-trail-frame"
-            class="sc-trail-frame"
-            title="Crew location trail"
-            src="/local/spacecadets/trail-map.html?v=20260717h"
-            loading="eager"
-            referrerpolicy="no-referrer"
-          ></iframe>
-          <div class="sc-trail-status show" id="sc-trail-status">LOADING MAP…</div>
+          <div id="sc-trail-map" class="sc-trail-map"></div>
+          <div class="sc-trail-status" id="sc-trail-status">LOADING PATH…</div>
         </div>
 
         <div class="sc-trail-stats" id="sc-trail-stats">
@@ -2221,35 +1434,10 @@ class SpaceCadetsPanel extends HTMLElement {
     m.querySelector("#sc-modal-bd").addEventListener("click", () => this._closeCrew());
     m.querySelector("#sc-modal-x").addEventListener("click", () => this._closeCrew());
     m.querySelector("#sc-trail-back").addEventListener("click", () => {
-      clearInterval(this._locatePoll);
       this._destroyTrailMap();
       this._renderCrew(true);
     });
-    m.querySelector("#sc-trail-locate")?.addEventListener("click", () => this._locateNow(this._crewTrailPerson));
     this._bindTrailDayChips(m);
-    this._trailIframe = m.querySelector("#sc-trail-frame");
-    this._trailIframeReady = false;
-    if (!this._trailMsgHandler) {
-      this._trailMsgHandler = (ev) => {
-        if (ev.data?.type === "sc-trail-ready") {
-          this._trailIframeReady = true;
-          if (this._trailPendingMsg) {
-            this._postTrailMap(this._trailPendingMsg);
-            this._trailPendingMsg = null;
-          }
-          this._postTrailMap({ type: "sc-trail-resize" });
-        }
-      };
-      window.addEventListener("message", this._trailMsgHandler);
-    }
-    this._trailIframe?.addEventListener("load", () => {
-      this._trailIframeReady = true;
-      if (this._trailPendingMsg) {
-        this._postTrailMap(this._trailPendingMsg);
-        this._trailPendingMsg = null;
-      }
-      this._postTrailMap({ type: "sc-trail-resize" });
-    });
 
     if (animateIn) {
       requestAnimationFrame(() => requestAnimationFrame(() => m.classList.add("open")));
@@ -2257,18 +1445,16 @@ class SpaceCadetsPanel extends HTMLElement {
       m.classList.add("open");
     }
     await new Promise((r) => setTimeout(r, animateIn ? 100 : 20));
-    await this._loadCrewTrailDay({ reuseMap: true });
+    await this._loadCrewTrailDay({ reuseMap: false });
   }
 
   async _loadCrewTrailDay({ reuseMap = true } = {}) {
     const personId = this._crewTrailPerson;
+    const mapEl = this.querySelector("#sc-trail-map");
+    const wrap = this.querySelector("#sc-trail-map-wrap");
     const status = this.querySelector("#sc-trail-status");
     const stats = this.querySelector("#sc-trail-stats");
-    if (!personId) return;
-
-    // Isolated Leaflet iframe — avoids HA CSS stacking bugs (tiles covering the path)
-    if (!this.querySelector("#sc-trail-frame")) this._ensureTrailIframe();
-    this._trailIframe = this.querySelector("#sc-trail-frame");
+    if (!personId || !mapEl) return;
 
     const day = this._selectedTrailDay();
     const trailEntity = this._bestTrailEntity(personId);
@@ -2281,16 +1467,9 @@ class SpaceCadetsPanel extends HTMLElement {
 
     let pts = this._crewTrailCache?.[cacheKey];
     if (!pts) {
-      pts = await this._fetchTrailPointsMerged(personId, day);
+      pts = await this._fetchTrailPoints(trailEntity, day.start, day.end);
       this._crewTrailCache = this._crewTrailCache || {};
       this._crewTrailCache[cacheKey] = pts;
-      if (pts.length) {
-        this._trailDaysWithData = this._trailDaysWithData || {};
-        this._trailDaysWithData[day.key] = pts.length;
-        // refresh chip styling lightly
-        const chip = this.querySelector(`[data-day-key="${day.key}"]`);
-        if (chip) chip.classList.add("has-data");
-      }
     }
 
     const dist = this._trailDistanceKm(pts);
@@ -2305,37 +1484,182 @@ class SpaceCadetsPanel extends HTMLElement {
         <div><span>SPAN</span><strong>${span}</strong></div>`;
     }
 
-    const home = this._homeCoords();
-    const msg = {
-      type: "sc-trail-set",
-      label: day.label,
-      home: { lat: home.lat, lon: home.lon },
-      points: pts.map((p) => [p.lat, p.lon]),
-    };
+    try {
+      const L = await this._ensureLeaflet();
+      const home = this._homeCoords();
 
-    if (this._trailIframeReady) {
-      this._postTrailMap(msg);
-      this._postTrailMap({ type: "sc-trail-resize" });
-    } else {
-      this._trailPendingMsg = msg;
-      // Also try immediately — load handler may have already fired
-      this._postTrailMap(msg);
-    }
+      let map = this._trailMap;
+      const canReuse = reuseMap && map && map.getContainer && map.getContainer() === mapEl;
+      if (!canReuse) {
+        this._destroyTrailMap();
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
-    if (status) {
+        // Explicit pixel size helps Leaflet request the right tile set
+        if (wrap) {
+          const rect = wrap.getBoundingClientRect();
+          if (rect.height > 40) {
+            mapEl.style.height = `${Math.round(rect.height)}px`;
+            mapEl.style.width = `${Math.round(rect.width)}px`;
+          }
+        }
+
+        map = L.map(mapEl, {
+          zoomControl: true,
+          attributionControl: false,
+          preferCanvas: false,
+          scrollWheelZoom: true,
+          dragging: true,
+          touchZoom: true,
+          doubleClickZoom: true,
+          boxZoom: true,
+          keyboard: true,
+          inertia: true,
+        });
+        this._trailMap = map;
+
+        // Stop page scroll without blocking Leaflet drag/zoom handlers
+        L.DomEvent.disableScrollPropagation(map.getContainer());
+
+        // No detectRetina / no {r} — retina + forced CSS sizes was leaving gray gaps.
+        // Opaque map host (no backdrop-filter ancestors) is required for full tile paint.
+        this._trailTiles = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png", {
+          maxZoom: 19,
+          minZoom: 2,
+          subdomains: "abcd",
+          tileSize: 256,
+          zoomOffset: 0,
+          updateWhenIdle: false,
+          updateWhenZooming: false,
+          keepBuffer: 8,
+          detectRetina: false,
+          crossOrigin: true,
+          className: "sc-map-tiles",
+        }).addTo(map);
+
+        // Force a full reload after first layout
+        map.once("load", () => {
+          try {
+            this._trailTiles?.redraw();
+          } catch (_) {}
+        });
+
+        map.on("dragstart zoomstart", () => {
+          this._trailUserMoved = true;
+        });
+      }
+
+      // Clear previous path layers only
+      if (this._trailLayer) {
+        try {
+          map.removeLayer(this._trailLayer);
+        } catch (_) {}
+        this._trailLayer = null;
+      }
+
+      const layers = [];
+      const homeIcon = L.divIcon({
+        className: "sc-trail-home-ico",
+        html: "<span>✦</span>",
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
+      });
+      layers.push(L.marker([home.lat, home.lon], { icon: homeIcon, interactive: false }));
+
       if (!pts.length) {
-        status.textContent = "NO GPS POINTS FOR THIS DAY";
-        status.classList.add("show");
-      } else {
+        this._trailLayer = L.layerGroup(layers).addTo(map);
+        this._trailFitBounds = null;
+        this._trailUserMoved = false;
+        map.setView([home.lat, home.lon], 13);
+        if (status) {
+          status.textContent = "NO GPS POINTS FOR THIS DAY";
+          status.classList.add("show");
+        }
+        this._scheduleMapResize(map, { refit: false });
+        return;
+      }
+
+      const latlngs = pts.map((p) => [p.lat, p.lon]);
+      // interactive:false so path never steals drag/zoom gestures
+      layers.push(
+        L.polyline(latlngs, {
+          color: "#c026d3",
+          weight: 14,
+          opacity: 0.35,
+          lineJoin: "round",
+          lineCap: "round",
+          interactive: false,
+          className: "sc-trail-glow",
+        })
+      );
+      layers.push(
+        L.polyline(latlngs, {
+          color: "#22d3ee",
+          weight: 5,
+          opacity: 1,
+          lineJoin: "round",
+          lineCap: "round",
+          interactive: false,
+          className: "sc-trail-line",
+        })
+      );
+      // Dots at each ping so sparse days still "show" data
+      latlngs.forEach((ll, idx) => {
+        if (idx === 0 || idx === latlngs.length - 1) return;
+        if (latlngs.length > 40 && idx % Math.ceil(latlngs.length / 30) !== 0) return;
+        layers.push(
+          L.circleMarker(ll, {
+            radius: 3,
+            color: "#f0abfc",
+            weight: 1,
+            fillColor: "#67e8f9",
+            fillOpacity: 0.9,
+            opacity: 0.9,
+            interactive: false,
+          })
+        );
+      });
+
+      const startIcon = L.divIcon({
+        className: "sc-trail-endpoint start",
+        html: "<span>A</span>",
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
+      });
+      const endIcon = L.divIcon({
+        className: "sc-trail-endpoint end",
+        html: "<span>B</span>",
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
+      });
+      layers.push(L.marker(latlngs[0], { icon: startIcon, interactive: false }));
+      layers.push(L.marker(latlngs[latlngs.length - 1], { icon: endIcon, interactive: false }));
+
+      this._trailLayer = L.layerGroup(layers).addTo(map);
+      const bounds = L.latLngBounds(latlngs).pad(0.18);
+      this._trailFitBounds = bounds;
+      this._trailUserMoved = false;
+      map.fitBounds(bounds, { animate: true, maxZoom: 15, padding: [28, 28] });
+
+      if (status) {
         status.textContent = `${day.label} · ${pts.length} PINGS`;
         setTimeout(() => status.classList.remove("show"), 1400);
       }
+      this._scheduleMapResize(map, { refit: true });
+      // Nudge tiles after settle
+      setTimeout(() => {
+        if (this._trailMap !== map) return;
+        try {
+          map.invalidateSize({ animate: false });
+          this._trailTiles?.redraw();
+        } catch (_) {}
+      }, 350);
+    } catch (e) {
+      console.warn(e);
+      if (status) {
+        status.textContent = "MAP FAILED TO LOAD";
+        status.classList.add("show");
+      }
     }
-
-    // Keep iframe sized after modal animation
-    [50, 200, 450].forEach((ms) => {
-      setTimeout(() => this._postTrailMap({ type: "sc-trail-resize" }), ms);
-    });
   }
 
   /* ---------- bind view events ---------- */
@@ -2344,20 +1668,6 @@ class SpaceCadetsPanel extends HTMLElement {
       const act = el.dataset.act;
       if (act === "select") {
         el.addEventListener("change", () => this._selectOption(el.dataset.entity, el.value));
-        return;
-      }
-      if (act === "effect") {
-        el.addEventListener("change", () =>
-          this._call("light", "turn_on", { effect: el.value }, { entity_id: el.dataset.entity })
-        );
-        return;
-      }
-      if (act === "bright") {
-        const val = el.parentElement?.querySelector(".sc-slider-val");
-        el.addEventListener("input", () => { if (val) val.textContent = el.value + "%"; });
-        el.addEventListener("change", () =>
-          this._call("light", "turn_on", { brightness_pct: Number(el.value) }, { entity_id: el.dataset.entity })
-        );
         return;
       }
       if (act === "number") {
@@ -2378,19 +1688,6 @@ class SpaceCadetsPanel extends HTMLElement {
       el.addEventListener("click", (ev) => {
         ev.preventDefault();
         const entity = el.dataset.entity;
-        if (act === "pick-effect") { this._openEffectPicker(); return; }
-        if (act === "pick-palette") { this._openPalettePicker(); return; }
-        if (act === "expand-player") {
-          const hit = ev.target.closest("button, input, select, a, .sc-transport, .sc-vol, .sc-progress");
-          if (hit && hit !== el) return;
-          this._openMediaExpand(el);
-          return;
-        }
-        if (act === "music-mode") { this._setMusicMode(el.dataset.mode); return; }
-        if (act === "mx-close") { this._closeMediaExpand(); return; }
-        if (act === "mx-back") { this._browseBack(); return; }
-        if (act === "mx-open") { this._browseInto(el.dataset.mtype, el.dataset.mid, el.dataset.title); return; }
-        if (act === "mx-play") { ev.stopPropagation(); this._maPlay(el.dataset.mtype, el.dataset.mid, el.dataset.title); return; }
         if (act === "toggle" && entity) this._toggle(entity);
         else if (act === "turn_on" && entity) this._turn(entity, true);
         else if (act === "turn_off" && entity) this._turn(entity, false);
@@ -2634,13 +1931,9 @@ SpaceCadetsPanel.styles = `
 .sc-track { font-size: 18px; font-weight: 700; }
 .sc-artist { color: #c4b5fd; margin-bottom: 8px; }
 .sc-transport { display: flex; gap: 8px; }
-.sc-transport button { width: 36px; height: 36px; border-radius: 50%; border: 1px solid rgba(216,180,254,0.35); background: rgba(76,29,149,0.45); color: #fff; cursor: pointer; box-shadow: 0 0 14px rgba(168,85,247,0.3); font-size: 14px; display: inline-flex; align-items: center; justify-content: center; padding: 0; transition: transform 0.14s ease, background 0.16s ease, box-shadow 0.16s ease; }
-.sc-transport button:hover { background: rgba(124,58,237,0.6); transform: translateY(-1px); }
-.sc-transport button:active { transform: scale(0.92); }
-.sc-transport button svg { width: 46%; height: 46%; display: block; }
-.sc-transport button.mute.on { background: rgba(244,114,182,0.4); border-color: rgba(244,114,182,0.65); box-shadow: 0 0 16px rgba(244,114,182,0.4); }
+.sc-transport button { width: 36px; height: 36px; border-radius: 50%; border: 1px solid rgba(216,180,254,0.35); background: rgba(76,29,149,0.45); color: #fff; cursor: pointer; box-shadow: 0 0 14px rgba(168,85,247,0.3); font-size: 14px; }
+.sc-transport button:hover { background: rgba(124,58,237,0.6); }
 .sc-transport .big { width: 44px; height: 44px; background: linear-gradient(135deg, #e879f9, #38bdf8); }
-.sc-transport .big svg { width: 42%; height: 42%; }
 
 .sc-auto-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid rgba(216,180,254,0.12); letter-spacing: 0.06em; }
 .sc-toggle { width: 46px; height: 26px; border-radius: 999px; border: 1px solid rgba(216,180,254,0.3); background: rgba(30, 20, 50, 0.8); position: relative; cursor: pointer; }
@@ -2860,13 +2153,6 @@ SpaceCadetsPanel.styles = `
 .sc-trail-day-chip.more {
   border-style: dashed; color: #67e8f9;
 }
-.sc-trail-day-chip.has-data {
-  border-color: rgba(103,232,249,0.55);
-  box-shadow: inset 0 -2px 0 rgba(34,211,238,0.85);
-}
-.sc-trail-day-chip:not(.has-data):not(.more):not(.active) {
-  opacity: 0.55;
-}
 .sc-trail-map-wrap {
   position: relative; border-radius: 18px; overflow: hidden;
   border: 1px solid rgba(103,232,249,0.45);
@@ -2876,14 +2162,60 @@ SpaceCadetsPanel.styles = `
   flex: 1 1 auto;
   touch-action: manipulation;
   overscroll-behavior: contain;
+  cursor: grab;
+  /* Own compositing layer — keeps tiles from going gray under filters elsewhere */
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  isolation: isolate;
+  contain: layout style;
 }
-.sc-trail-frame {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border: 0;
+.sc-trail-map-wrap:active { cursor: grabbing; }
+.sc-trail-map {
+  width: 100%; height: 100%;
+  z-index: 1;
   background: #1a2332;
-  /* iframe isolates Leaflet from HA/global CSS — tiles + path stay aligned */
+}
+.sc-trail-map .leaflet-container {
+  width: 100% !important; height: 100% !important;
+  background: #1a2332 !important;
+  font: inherit;
+  cursor: grab;
+}
+.sc-trail-map .leaflet-container:active { cursor: grabbing; }
+.sc-trail-map .leaflet-control-zoom a {
+  background: rgba(12,6,28,0.92) !important;
+  color: #e9d5ff !important;
+  border-color: rgba(216,180,254,0.35) !important;
+}
+.sc-trail-map .leaflet-pane { z-index: auto; }
+.sc-trail-map .leaflet-tile-pane { z-index: 200; }
+.sc-trail-map .leaflet-overlay-pane { z-index: 450; }
+.sc-trail-map .leaflet-marker-pane { z-index: 600; }
+.sc-trail-map .leaflet-shadow-pane { z-index: 500; }
+.sc-trail-map .leaflet-map-pane svg { z-index: 450; }
+/* Critical: HA sets img{max-width:100%} which shreds Leaflet tiles into gray gaps */
+.sc-trail-map img,
+.sc-trail-map .leaflet-tile,
+.sc-trail-map .leaflet-marker-icon,
+.sc-trail-map .leaflet-marker-shadow {
+  max-width: none !important;
+  max-height: none !important;
+  width: auto !important;
+  height: auto !important;
+  box-sizing: content-box !important;
+  image-rendering: auto;
+}
+.sc-trail-map .leaflet-tile-container img {
+  max-width: none !important;
+  max-height: none !important;
+}
+.sc-trail-map .leaflet-layer,
+.sc-trail-map .leaflet-tile-container {
+  position: absolute; left: 0; top: 0;
+}
+.sc-trail-map path.sc-trail-line,
+.sc-trail-map path.sc-trail-glow {
+  filter: drop-shadow(0 0 4px rgba(34,211,238,0.65));
 }
 .sc-trail-status {
   position: absolute; left: 50%; top: 12px; transform: translateX(-50%);
@@ -3073,267 +2405,6 @@ SpaceCadetsPanel.styles = `
 .sc-pa-meta em { font-style: normal; color: #a5b4fc; font-size: 12px; letter-spacing: 0.08em; }
 .sc-pa-state { font-weight: 700; color: #67e8f9; letter-spacing: 0.1em; }
 
-/* ---- Nebula grid pickers ---- */
-.sc-nebula-lbl em { font-style: normal; color: #67e8f9; letter-spacing: 0.08em; font-size: 10px; }
-.sc-nebula-pick {
-  display: flex; align-items: center; gap: 12px; width: 100%; cursor: pointer; font: inherit;
-  padding: 12px 14px; border-radius: 12px; color: #f3e8ff; text-align: left;
-  border: 1px solid rgba(216,180,254,0.4); background: rgba(20,10,40,0.9);
-  box-shadow: inset 0 0 18px rgba(168,85,247,0.15); transition: 0.18s ease;
-}
-.sc-nebula-pick:hover { border-color: rgba(103,232,249,0.7); box-shadow: 0 0 18px rgba(103,232,249,0.3); }
-.sc-nebula-pick .txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; letter-spacing: 0.02em; }
-.sc-nebula-pick .chev { color: #c084fc; font-size: 11px; letter-spacing: 0.12em; flex: 0 0 auto; }
-.sc-nebula-pick .sw { width: 46px; height: 20px; border-radius: 6px; flex: 0 0 auto; box-shadow: 0 0 10px rgba(0,0,0,0.4), inset 0 0 0 1px rgba(255,255,255,0.25); }
-.sc-nebula-pick[disabled] { opacity: 0.5; cursor: default; }
-
-.sc-pick-modal { width: min(680px, 94vw) !important; display: flex; flex-direction: column; max-height: min(88vh, 860px); }
-.sc-pick-search {
-  width: 100%; box-sizing: border-box; margin-bottom: 14px;
-  padding: 12px 16px; border-radius: 12px; font: inherit; letter-spacing: 0.04em;
-  background: rgba(12,6,28,0.85); color: #f3e8ff; border: 1px solid rgba(216,180,254,0.35);
-}
-.sc-pick-search:focus { outline: none; border-color: rgba(103,232,249,0.7); box-shadow: 0 0 16px rgba(103,232,249,0.3); }
-.sc-pick-grid {
-  display: grid; gap: 10px; overflow-y: auto; padding: 2px; flex: 1 1 auto;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  overscroll-behavior: contain;
-}
-.sc-pick-grid.palette { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
-.sc-pick-item {
-  display: flex; flex-direction: column; gap: 8px; cursor: pointer; font: inherit;
-  padding: 12px; border-radius: 14px; text-align: left; color: #e9d5ff;
-  border: 1px solid rgba(216,180,254,0.22); background: rgba(24,10,48,0.55);
-  transition: 0.16s ease; min-height: 46px; justify-content: center;
-}
-.sc-pick-item:hover { transform: translateY(-2px); border-color: rgba(103,232,249,0.55); box-shadow: 0 0 20px rgba(103,232,249,0.28); }
-.sc-pick-item.active { border-color: rgba(232,121,249,0.85); box-shadow: 0 0 22px rgba(232,121,249,0.5); background: rgba(76,29,149,0.5); }
-.sc-pick-item .sc-pick-name { font-size: 13px; letter-spacing: 0.03em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sc-pick-item.palette .sc-pick-sw {
-  width: 100%; height: 34px; border-radius: 10px;
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.25), 0 4px 14px rgba(0,0,0,0.4);
-}
-.sc-pick-item.active .sc-pick-name { color: #f5d0fe; font-weight: 700; }
-
-/* ---- Nebula (WLED) control ---- */
-.sc-nebula { position: relative; overflow: hidden; padding: 0; }
-.sc-nebula-inner { position: relative; z-index: 1; padding: 20px; }
-.sc-nebula-aura {
-  position: absolute; inset: -40%; z-index: 0; pointer-events: none; opacity: 0.32;
-  background:
-    radial-gradient(40% 40% at 25% 30%, rgba(232,121,249,0.9), transparent 60%),
-    radial-gradient(45% 45% at 75% 35%, rgba(56,189,248,0.85), transparent 60%),
-    radial-gradient(50% 50% at 55% 80%, rgba(168,85,247,0.85), transparent 60%);
-  filter: blur(26px) saturate(1.3);
-  transition: opacity 0.6s ease;
-}
-.sc-nebula.live .sc-nebula-aura { opacity: 0.6; animation: sc-nebula-drift 18s ease-in-out infinite alternate; }
-@keyframes sc-nebula-drift {
-  0%   { transform: translate3d(-4%, -2%, 0) rotate(0deg) scale(1.05); }
-  50%  { transform: translate3d(4%, 3%, 0) rotate(8deg) scale(1.15); }
-  100% { transform: translate3d(-2%, 4%, 0) rotate(-6deg) scale(1.08); }
-}
-.sc-nebula-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
-.sc-nebula-brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
-.sc-nebula-orb {
-  width: 42px; height: 42px; border-radius: 50%; flex: 0 0 auto;
-  background: radial-gradient(circle at 35% 30%, #fff, #f0abfc 35%, #a855f7 62%, #0ea5e9 100%);
-  box-shadow: 0 0 26px rgba(232,121,249,0.85), inset 0 0 12px rgba(255,255,255,0.5);
-}
-.sc-nebula.live .sc-nebula-orb { animation: sc-orb-pulse 3.2s ease-in-out infinite; }
-@keyframes sc-orb-pulse {
-  0%,100% { box-shadow: 0 0 22px rgba(232,121,249,0.7), inset 0 0 12px rgba(255,255,255,0.5); }
-  50%     { box-shadow: 0 0 40px rgba(103,232,249,0.9), inset 0 0 14px rgba(255,255,255,0.7); }
-}
-.sc-nebula-sub { color: #c4b5fd; letter-spacing: 0.14em; font-size: 12px; margin-top: 3px; text-transform: uppercase; }
-.sc-nebula-power {
-  display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font: inherit;
-  padding: 9px 16px; border-radius: 999px; letter-spacing: 0.14em; font-weight: 700; font-size: 12px;
-  color: #cbd5e1; border: 1px solid rgba(148,163,184,0.4); background: rgba(15,23,42,0.55);
-  transition: 0.2s ease;
-}
-.sc-nebula-power .dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; box-shadow: none; transition: 0.2s ease; }
-.sc-nebula-power.on { color: #052e16; border-color: transparent; background: linear-gradient(90deg, #22d3ee, #a855f7); box-shadow: 0 0 22px rgba(168,85,247,0.5); }
-.sc-nebula-power.on .dot { background: #ecfeff; box-shadow: 0 0 10px #fff; }
-.sc-nebula-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.sc-nebula-field { display: flex; flex-direction: column; gap: 9px; padding: 12px 14px; border-radius: 16px; border: 1px solid rgba(216,180,254,0.22); background: rgba(12,6,28,0.5); }
-.sc-nebula-field.wide { grid-column: 1 / -1; }
-.sc-nebula-lbl { display: flex; justify-content: space-between; align-items: center; color: #a5b4fc; letter-spacing: 0.16em; font-size: 11px; }
-.sc-nebula-lbl .sc-slider-val { font-style: normal; color: #67e8f9; font-weight: 700; letter-spacing: 0.06em; }
-.sc-nebula-selwrap { position: relative; }
-.sc-nebula-selwrap::after {
-  content: "▾"; position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
-  color: #c084fc; pointer-events: none; font-size: 12px;
-}
-.sc-select.nebula {
-  width: 100%; appearance: none; -webkit-appearance: none;
-  background: rgba(20,10,40,0.9); color: #f3e8ff; cursor: pointer; font: inherit;
-  border: 1px solid rgba(216,180,254,0.4); border-radius: 12px; padding: 11px 34px 11px 14px;
-  letter-spacing: 0.03em; box-shadow: inset 0 0 18px rgba(168,85,247,0.15);
-}
-.sc-select.nebula:focus { outline: none; border-color: rgba(103,232,249,0.75); box-shadow: 0 0 18px rgba(103,232,249,0.35); }
-.sc-slider.nebula {
-  -webkit-appearance: none; appearance: none; width: 100%; height: 8px; border-radius: 999px; outline: none;
-  background: linear-gradient(90deg, #a855f7, #38bdf8);
-}
-.sc-slider.nebula.distort { background: linear-gradient(90deg, #f472b6, #a855f7, #22d3ee); }
-.sc-slider.nebula.speed { background: linear-gradient(90deg, #22d3ee, #a855f7); }
-.sc-slider.nebula.bright { background: linear-gradient(90deg, #1e293b, #f0abfc); }
-.sc-slider.nebula::-webkit-slider-thumb {
-  -webkit-appearance: none; appearance: none; width: 20px; height: 20px; border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, #fff, #e879f9 60%, #7c3aed);
-  box-shadow: 0 0 12px rgba(232,121,249,0.9); cursor: pointer; border: 2px solid rgba(255,255,255,0.5);
-}
-.sc-slider.nebula::-moz-range-thumb {
-  width: 20px; height: 20px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.5);
-  background: radial-gradient(circle at 35% 30%, #fff, #e879f9 60%, #7c3aed);
-  box-shadow: 0 0 12px rgba(232,121,249,0.9); cursor: pointer;
-}
-
-/* ---- tappable player affordance ---- */
-.sc-player { position: relative; cursor: pointer; transition: transform 0.18s ease, box-shadow 0.2s ease, border-color 0.2s ease; }
-.sc-player:hover { border-color: rgba(103,232,249,0.4); box-shadow: 0 0 26px rgba(56,189,248,0.18); }
-.sc-player-expand, .sc-hero-expand {
-  position: absolute; top: 12px; right: 12px; width: 34px; height: 34px; border-radius: 10px;
-  border: 1px solid rgba(216,180,254,0.35); background: rgba(12,6,28,0.6); color: #e9d5ff;
-  display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; z-index: 3;
-  transition: 0.16s ease;
-}
-.sc-player-expand svg, .sc-hero-expand svg { width: 18px; height: 18px; }
-.sc-player-expand:hover, .sc-hero-expand:hover { background: rgba(124,58,237,0.6); border-color: rgba(103,232,249,0.6); box-shadow: 0 0 16px rgba(56,189,248,0.35); }
-.sc-hero-state-wrap { display: flex; align-items: center; gap: 10px; }
-.sc-hero-expand { position: static; }
-
-/* ---- Crew trail locate ---- */
-.sc-trail-locate {
-  display: inline-flex; align-items: center; gap: 7px; padding: 8px 14px; border-radius: 999px;
-  border: 1px solid rgba(103,232,249,0.5); background: rgba(24,10,48,0.6); color: #67e8f9;
-  cursor: pointer; font: inherit; font-weight: 700; letter-spacing: 0.08em; font-size: 12px;
-  transition: 0.16s ease; flex: 0 0 auto;
-}
-.sc-trail-locate svg { width: 16px; height: 16px; }
-.sc-trail-identity .sc-trail-locate { margin-left: auto; }
-.sc-trail-locate:hover { background: rgba(56,189,248,0.25); box-shadow: 0 0 18px rgba(56,189,248,0.4); color: #cffafe; }
-.sc-trail-locate.pinging { color: #a5f3fc; border-color: rgba(103,232,249,0.8); box-shadow: 0 0 20px rgba(56,189,248,0.5); }
-.sc-trail-locate.pinging svg { animation: mxspin 1.1s linear infinite; }
-.sc-trail-locate.located { color: #052e16; background: linear-gradient(135deg, #67e8f9, #38bdf8); border-color: rgba(103,232,249,0.9); box-shadow: 0 0 24px rgba(56,189,248,0.7); }
-
-/* ---- Settings ---- */
-.sc-setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.sc-setting-title { font-size: 14px; letter-spacing: 0.08em; color: #f3e8ff; }
-.sc-setting-sub { color: #a5b4fc; font-size: 12px; margin-top: 3px; letter-spacing: 0.03em; }
-.sc-seg { display: inline-flex; gap: 6px; padding: 5px; border-radius: 14px; background: rgba(12,6,28,0.7); border: 1px solid rgba(216,180,254,0.22); }
-.sc-seg-btn { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 9px 16px; border-radius: 10px; border: 1px solid transparent; background: transparent; color: #c4b5fd; cursor: pointer; font: inherit; transition: 0.16s ease; }
-.sc-seg-btn strong { font-size: 13px; letter-spacing: 0.04em; }
-.sc-seg-btn em { font-style: normal; font-size: 10px; letter-spacing: 0.06em; opacity: 0.75; }
-.sc-seg-btn:hover { color: #f3e8ff; }
-.sc-seg-btn.on { background: linear-gradient(135deg, rgba(168,85,247,0.55), rgba(56,189,248,0.35)); border-color: rgba(232,121,249,0.6); color: #fff; box-shadow: 0 0 18px rgba(168,85,247,0.35); }
-
-/* ---- Full-screen media experience ---- */
-.sc-modal-root.sc-media-modal { padding: 24px; }
-.sc-mx-panel {
-  position: relative; z-index: 1; width: min(1120px, 96vw); height: min(90vh, 940px);
-  background: linear-gradient(160deg, #170b30 0%, #0d0722 58%, #0a0418 100%);
-  border: 1px solid rgba(216,180,254,0.26); border-radius: 26px;
-  box-shadow: 0 40px 120px rgba(0,0,0,0.62), 0 0 70px rgba(124,58,237,0.28);
-  overflow: hidden; will-change: transform; pointer-events: auto;
-}
-.sc-mx-inner { height: 100%; display: flex; flex-direction: column; }
-.sc-mx-topbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid rgba(216,180,254,0.16); background: linear-gradient(180deg, rgba(76,29,149,0.35), rgba(12,6,32,0.15)); }
-.sc-mx-brand { display: flex; align-items: center; gap: 10px; font-family: Orbitron, sans-serif; letter-spacing: 0.14em; font-size: 13px; color: #e9d5ff; }
-.sc-mx-brand svg { width: 18px; height: 18px; color: #c084fc; }
-.sc-mx-topbar .sc-mx-close { position: static; }
-.sc-mx-stage { flex: 1; min-height: 0; position: relative; display: flex; }
-.sc-mx-frame { border: 0; width: 100%; height: 100%; flex: 1; background: #0b0618; display: block; }
-.sc-mx-head {
-  flex: 0 0 340px; width: 340px; padding: 26px 24px; display: flex; flex-direction: column; gap: 14px;
-  position: relative; overflow-y: auto; overscroll-behavior: contain;
-  border-right: 1px solid rgba(216,180,254,0.14);
-  background: linear-gradient(180deg, rgba(76,29,149,0.28), rgba(12,6,32,0.15));
-}
-.sc-mx-close {
-  position: absolute; top: 16px; right: 16px; width: 34px; height: 34px; border-radius: 50%;
-  border: 1px solid rgba(216,180,254,0.35); background: rgba(12,6,28,0.6); color: #fff; cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center; padding: 0; z-index: 4;
-}
-.sc-mx-close svg { width: 16px; height: 16px; }
-.sc-mx-close:hover { background: rgba(124,58,237,0.6); }
-.sc-mx-art {
-  width: 100%; aspect-ratio: 1; border-radius: 18px; margin-top: 8px;
-  background: linear-gradient(145deg, #7c3aed, #0ea5e9) center/cover no-repeat;
-  box-shadow: 0 0 42px rgba(168,85,247,0.42); display: grid; place-items: center; color: rgba(255,255,255,0.75);
-}
-.sc-mx-art svg { width: 40%; height: 40%; }
-.sc-mx-art.live { animation: mxpulse 3.2s ease-in-out infinite; }
-@keyframes mxpulse { 0%,100% { box-shadow: 0 0 40px rgba(168,85,247,0.4); } 50% { box-shadow: 0 0 66px rgba(56,189,248,0.55); } }
-.sc-mx-info { display: flex; flex-direction: column; gap: 10px; }
-.sc-mx-kicker { font-size: 11px; letter-spacing: 0.12em; color: #a5b4fc; }
-.sc-mx-kicker em { color: #67e8f9; font-style: normal; }
-.sc-mx-title { font-size: 22px; font-weight: 700; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.sc-mx-sub { color: #c4b5fd; font-size: 13px; }
-.sc-mx-transport { justify-content: flex-start; margin-top: 4px; }
-.sc-mx-target { margin-top: 4px; font-size: 11px; letter-spacing: 0.1em; color: #8b93c0; }
-.sc-mx-target strong { color: #67e8f9; }
-
-.sc-mx-browsewrap { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.sc-mx-bar { display: flex; align-items: center; gap: 10px; padding: 16px 18px; border-bottom: 1px solid rgba(216,180,254,0.14); }
-.sc-mx-icbtn {
-  width: 38px; height: 38px; flex: 0 0 auto; border-radius: 10px; border: 1px solid rgba(216,180,254,0.3);
-  background: rgba(24,10,48,0.6); color: #e9d5ff; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 0;
-}
-.sc-mx-icbtn svg { width: 18px; height: 18px; }
-.sc-mx-icbtn:hover:not([disabled]) { background: rgba(124,58,237,0.55); }
-.sc-mx-icbtn[disabled] { opacity: 0.35; cursor: default; }
-.sc-mx-crumb { flex: 1; min-width: 0; font-size: 12px; letter-spacing: 0.06em; color: #ddd6fe; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sc-mx-searchwrap { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 10px; background: rgba(12,6,28,0.7); border: 1px solid rgba(216,180,254,0.25); color: #a5b4fc; flex: 0 0 auto; }
-.sc-mx-searchwrap svg { width: 15px; height: 15px; }
-.sc-mx-search { background: transparent; border: none; outline: none; color: #f3e8ff; font: inherit; width: 150px; }
-.sc-mx-grid { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 16px 18px; display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); align-content: start; }
-.sc-mx-item {
-  display: flex; flex-direction: column; gap: 8px; background: rgba(24,10,48,0.5);
-  border: 1px solid rgba(216,180,254,0.15); border-radius: 14px; padding: 10px; cursor: pointer;
-  color: #e9d5ff; font: inherit; text-align: left; overflow: hidden;
-  animation: mxpop 0.34s ease both; animation-delay: calc(var(--i) * 0.012s); transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
-}
-.sc-mx-item:hover { transform: translateY(-3px); border-color: rgba(103,232,249,0.5); box-shadow: 0 8px 22px rgba(56,189,248,0.22); }
-@keyframes mxpop { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
-.sc-mx-thumb { position: relative; width: 100%; aspect-ratio: 1; border-radius: 10px; background: #241033 center/cover no-repeat; display: grid; place-items: center; color: rgba(216,180,254,0.6); }
-.sc-mx-thumb svg { width: 34%; height: 34%; }
-.sc-mx-item.dir .sc-mx-thumb { background: linear-gradient(145deg, rgba(88,28,135,0.6), rgba(15,23,42,0.5)); }
-.sc-mx-play {
-  position: absolute; right: 6px; bottom: 6px; width: 36px; height: 36px; border-radius: 50%;
-  background: rgba(10,5,22,0.85); border: 1px solid rgba(232,121,249,0.55); color: #fff;
-  display: grid; place-items: center; box-shadow: 0 4px 14px rgba(0,0,0,0.5); transition: 0.14s ease;
-}
-.sc-mx-play svg { width: 55%; height: 55%; }
-.sc-mx-play:hover { background: linear-gradient(135deg, #e879f9, #38bdf8); transform: scale(1.08); }
-.sc-mx-name { font-size: 12.5px; line-height: 1.25; max-height: 2.6em; overflow: hidden; }
-.sc-mx-loading, .sc-mx-empty { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 48px 0; color: #a5b4fc; text-align: center; }
-.sc-mx-loading svg { width: 44px; height: 44px; color: #a855f7; }
-.sc-mx-spin { display: inline-flex; animation: mxspin 1.1s linear infinite; }
-@keyframes mxspin { to { transform: rotate(360deg); } }
-.sc-mx-empty small { color: #7c83b0; }
-.sc-mx-toast {
-  position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(18px);
-  background: rgba(16,8,34,0.96); border: 1px solid rgba(103,232,249,0.5); color: #e0f2fe;
-  padding: 11px 20px; border-radius: 999px; opacity: 0; transition: 0.26s ease; z-index: 6;
-  box-shadow: 0 10px 34px rgba(0,0,0,0.55); letter-spacing: 0.04em; font-size: 13px; max-width: 80%; text-align: center;
-}
-.sc-mx-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-
-@media (max-width: 820px) {
-  .sc-modal-root.sc-media-modal { padding: 0; }
-  .sc-mx-panel { width: 100vw; height: 100vh; height: 100dvh; border-radius: 0; }
-  .sc-mx-inner { flex-direction: column; }
-  .sc-mx-head { flex: 0 0 auto; width: auto; flex-direction: row; align-items: flex-start; gap: 14px; padding: 18px 16px; border-right: none; border-bottom: 1px solid rgba(216,180,254,0.14); }
-  .sc-mx-art { width: 96px; height: 96px; flex: 0 0 96px; margin-top: 0; }
-  .sc-mx-info { flex: 1; min-width: 0; gap: 8px; }
-  .sc-mx-title { font-size: 18px; }
-  .sc-mx-close { top: 10px; right: 10px; }
-  .sc-mx-grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; }
-  .sc-mx-search { width: 90px; }
-}
-
 @media (max-width: 900px) {
   .sc-main { padding: 10px 10px 20px; gap: 10px; }
   .sc-studiobar { padding: 8px 10px; }
@@ -3349,28 +2420,11 @@ SpaceCadetsPanel.styles = `
   .sc-quick-grid, .sc-quick-grid.four { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .sc-quick { padding: 12px 8px; }
   .sc-zone-grid { grid-template-columns: 1fr; }
-  .sc-nebula-grid { grid-template-columns: 1fr; }
-  .sc-pick-grid, .sc-pick-grid.palette { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
   .sc-media-grid, .sc-media-grid.three { grid-template-columns: 1fr; }
   .sc-wx-stats { grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
   .sc-radar-wrap { height: 200px; min-height: 160px; }
   .sc-env-grid { grid-template-columns: 1fr; }
-  .sc-player { flex-direction: column; align-items: center; text-align: center; }
-  .sc-player-body { text-align: center; width: 100%; }
-  .sc-player-name, .sc-player-track, .sc-player-artist { text-align: center; }
-  .sc-transport, .sc-transport.big-row { justify-content: center; }
-  .sc-vol { justify-content: center; }
-  .sc-progress { width: 100%; }
-  .sc-player-pick { justify-content: center; }
-  .sc-media-head { justify-content: center; text-align: center; }
-  .sc-media-sub { text-align: center; }
-  .sc-workshop-master { justify-content: center; text-align: center; }
-  .sc-wm-btns { justify-content: center; width: 100%; }
-  .sc-motion { justify-content: center; text-align: center; }
-  .sc-nebula-head { justify-content: center; text-align: center; }
-  .sc-nebula-brand { justify-content: center; }
-  .sc-studiobar-btns { justify-content: center; }
-  .sc-zone-head { justify-content: center; text-align: center; }
+  .sc-player { flex-direction: column; align-items: flex-start; }
   .sc-menu-spacer { width: 52px; }
 }
 @media (min-width: 901px) {

@@ -20,20 +20,6 @@ class SpaceCadetsPanel extends HTMLElement {
     this._mediaPlayer = null; // locked player when auto-follow is off
     this._mediaAuto = true;   // scan all sources and promote whatever is playing
     this._modalOpen = false;
-    this._musicMode = this._loadMusicMode(); // "native" | "assistant"
-  }
-
-  _loadMusicMode() {
-    try {
-      const v = window.localStorage.getItem("sc_music_mode");
-      return v === "assistant" || v === "native" ? v : "native";
-    } catch (_) { return "native"; }
-  }
-
-  _setMusicMode(mode) {
-    this._musicMode = mode === "assistant" ? "assistant" : "native";
-    try { window.localStorage.setItem("sc_music_mode", this._musicMode); } catch (_) {}
-    this._paint();
   }
 
   set hass(hass) {
@@ -278,7 +264,6 @@ class SpaceCadetsPanel extends HTMLElement {
       folder: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5z"/></svg>',
       disc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/></svg>',
       playc: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 7.5v9a.8.8 0 0 0 1.2.7l7-4.5a.8.8 0 0 0 0-1.4l-7-4.5A.8.8 0 0 0 9 7.5z"/></svg>',
-      target: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/></svg>',
     };
     return I[name] || "";
   }
@@ -318,11 +303,15 @@ class SpaceCadetsPanel extends HTMLElement {
       <div class="sc-modal-backdrop" id="sc-mx-bd"></div>
       <div class="sc-mx-panel" id="sc-mx-panel">
         <div class="sc-mx-inner" id="sc-mx-inner">
-          <div class="sc-mx-topbar">
-            <div class="sc-mx-brand">${this._ic("disc")}<span>${this._musicMode === "assistant" ? "MUSIC ASSISTANT" : "MUSIC LIBRARY"}</span></div>
-            <button class="sc-mx-close" id="sc-mx-close" data-act="mx-close" title="Close" aria-label="Close">${this._ic("close")}</button>
+          <div class="sc-mx-head" id="sc-mx-head">${this._expandHeaderHtml()}</div>
+          <div class="sc-mx-browsewrap">
+            <div class="sc-mx-bar">
+              <button class="sc-mx-icbtn" id="sc-mx-back" data-act="mx-back" title="Back" aria-label="Back" disabled>${this._ic("back")}</button>
+              <div class="sc-mx-crumb" id="sc-mx-crumb">LIBRARY</div>
+              <div class="sc-mx-searchwrap">${this._ic("search")}<input id="sc-mx-search" class="sc-mx-search" placeholder="Filter this view…" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+            </div>
+            <div class="sc-mx-grid" id="sc-mx-grid"></div>
           </div>
-          <div class="sc-mx-stage" id="sc-mx-stage"></div>
         </div>
       </div>`;
 
@@ -332,70 +321,8 @@ class SpaceCadetsPanel extends HTMLElement {
     this._flipIn(panel, inner, src);
     m.querySelector("#sc-mx-bd").addEventListener("click", () => this._closeMediaExpand());
     this._bind(panel);
-    this._initBrowsePane();
-  }
-
-  async _initBrowsePane() {
-    const stage = this.querySelector("#sc-mx-stage");
-    if (!stage) return;
-    if (this._musicMode === "native") { this._initNativeBrowse(stage); return; }
-    stage.innerHTML = `<div class="sc-mx-loading"><span class="sc-mx-spin">${this._ic("disc")}</span><span>Opening Music Assistant…</span></div>`;
-    try {
-      const url = await this._maIngressUrl();
-      if (!this._expandOpen) return;
-      if (!url) throw new Error("no ingress url");
-      const f = document.createElement("iframe");
-      f.className = "sc-mx-frame";
-      f.setAttribute("allow", "autoplay; fullscreen; encrypted-media; clipboard-write");
-      f.src = url;
-      stage.innerHTML = "";
-      stage.appendChild(f);
-      this._startIngressKeepalive();
-    } catch (e) {
-      if (this._expandOpen) this._initNativeBrowse(stage);
-    }
-  }
-
-  async _maIngressUrl() {
-    const unwrap = (r) => (r && r.data !== undefined ? r.data : r);
-    const info = unwrap(await this._hass.callWS({ type: "supervisor/api", endpoint: "/addons/d5369777_music_assistant/info", method: "get" }));
-    const url = info && (info.ingress_url || info.ingress_entry);
-    const sres = unwrap(await this._hass.callWS({ type: "supervisor/api", endpoint: "/ingress/session", method: "post" }));
-    const session = sres && sres.session;
-    if (session) {
-      this._maSession = session;
-      document.cookie = `ingress_session=${session}; path=/api/hassio_ingress/; SameSite=Strict`;
-    }
-    return url;
-  }
-
-  _startIngressKeepalive() {
-    this._stopIngressKeepalive();
-    this._ingressKeep = setInterval(() => {
-      if (!this._maSession) return;
-      this._hass.callWS({ type: "supervisor/api", endpoint: "/ingress/validate_session", method: "post", data: { session: this._maSession } }).catch(() => {});
-    }, 55000);
-  }
-
-  _stopIngressKeepalive() {
-    if (this._ingressKeep) { clearInterval(this._ingressKeep); this._ingressKeep = null; }
-  }
-
-  _initNativeBrowse(stage) {
-    this._mediaStack = [];
-    this._browseCurrent = null;
-    stage.innerHTML = `
-      <div class="sc-mx-browsewrap">
-        <div class="sc-mx-bar">
-          <button class="sc-mx-icbtn" id="sc-mx-back" data-act="mx-back" title="Back" aria-label="Back" disabled>${this._ic("back")}</button>
-          <div class="sc-mx-crumb" id="sc-mx-crumb">LIBRARY</div>
-          <div class="sc-mx-searchwrap">${this._ic("search")}<input id="sc-mx-search" class="sc-mx-search" placeholder="Filter this view…" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
-        </div>
-        <div class="sc-mx-grid" id="sc-mx-grid"></div>
-      </div>`;
-    this._bind(stage);
-    const search = stage.querySelector("#sc-mx-search");
-    if (search) search.addEventListener("input", () => this._filterBrowse(search.value));
+    const search = m.querySelector("#sc-mx-search");
+    search.addEventListener("input", () => this._filterBrowse(search.value));
     this._loadBrowseNode(null);
   }
 
@@ -425,7 +352,6 @@ class SpaceCadetsPanel extends HTMLElement {
     if (!m || !this._expandOpen) return;
     this._expandOpen = false;
     this._lockAppScroll(false);
-    this._stopIngressKeepalive();
     const panel = m.querySelector("#sc-mx-panel");
     const inner = m.querySelector("#sc-mx-inner");
     const src = this._expandSrc;
@@ -491,10 +417,6 @@ class SpaceCadetsPanel extends HTMLElement {
       if (node) { msg.media_content_id = node.id; msg.media_content_type = node.type; }
       const res = await this._hass.callWS(msg);
       if (!this._expandOpen) return;
-      // At the library root, hide non-music "media source" apps (Camera, TTS, iCloud, images, My media, Radio Browser)
-      if (this._mediaStack.length === 0 && Array.isArray(res.children)) {
-        res.children = res.children.filter((c) => c.media_class !== "app");
-      }
       this._browseCurrent = res;
       if (crumb) crumb.textContent = (this._mediaStack.map((n) => n.title).concat(res.title || "").filter(Boolean).join("  ›  ") || "LIBRARY").toUpperCase();
       if (back) back.disabled = this._mediaStack.length === 0;
@@ -1533,26 +1455,7 @@ class SpaceCadetsPanel extends HTMLElement {
   /* ---------- SYSTEM ---------- */
   _htmlSystem() {
     const upd = (id) => (this._state(id) === "on" ? "UPDATE READY" : "CURRENT");
-    const mode = this._musicMode;
     return `
-      <div class="sc-full glass">
-        <div class="sc-card-title">PREFERENCES</div>
-        <div class="sc-setting">
-          <div class="sc-setting-info">
-            <div class="sc-setting-title">MUSIC BROWSER STYLE</div>
-            <div class="sc-setting-sub">How the full-screen player browses your library</div>
-          </div>
-          <div class="sc-seg">
-            <button class="sc-seg-btn ${mode === "native" ? "on" : ""}" data-act="music-mode" data-mode="native">
-              <strong>Native</strong><em>Space Cadets grid</em>
-            </button>
-            <button class="sc-seg-btn ${mode === "assistant" ? "on" : ""}" data-act="music-mode" data-mode="assistant">
-              <strong>Assistant</strong><em>Music Assistant UI</em>
-            </button>
-          </div>
-        </div>
-      </div>
-
       <div class="sc-full glass">
         <div class="sc-card-title">SHIP SYSTEMS</div>
         <div class="sc-media-grid">
@@ -1665,86 +1568,6 @@ class SpaceCadetsPanel extends HTMLElement {
     const phone = trackers.find((t) => /iphone|phone|pixel|android|galaxy/i.test(t));
     // Prefer phone GPS over person aggregate / Mac Wi-Fi
     return phone || trackers[0] || personId;
-  }
-
-  _notifyServiceFor(personId) {
-    const ent = this._bestTrailEntity(personId);
-    if (ent && ent.startsWith("device_tracker.")) {
-      const slug = ent.split(".")[1];
-      if (this._hass?.services?.notify?.["mobile_app_" + slug]) return "mobile_app_" + slug;
-    }
-    // Fallback: known phones by person
-    const known = {
-      "person.isaac_norris": "mobile_app_isaacs_iphone_14",
-      "person.jared_lee_lyons": "mobile_app_jareds_iphone",
-    };
-    const svc = known[personId];
-    if (svc && this._hass?.services?.notify?.[svc]) return svc;
-    return null;
-  }
-
-  _requestLocation(personId) {
-    const svc = this._notifyServiceFor(personId);
-    if (!svc) return false;
-    try {
-      this._call("notify", svc, { message: "request_location_update" });
-      return true;
-    } catch (_) { return false; }
-  }
-
-  _trackerFix(ent) {
-    const s = this._s(ent);
-    if (!s) return "";
-    const a = s.attributes || {};
-    return `${s.last_updated}|${a.latitude}|${a.longitude}`;
-  }
-
-  _locateNow(personId) {
-    const name = this._name(personId);
-    const ent = this._bestTrailEntity(personId);
-    const ok = this._requestLocation(personId);
-    const status = this.querySelector("#sc-trail-status");
-    const btn = this.querySelector("#sc-trail-locate");
-    if (btn) { btn.classList.remove("located"); btn.classList.toggle("pinging", ok); }
-    if (status) {
-      status.textContent = ok ? `PINGING ${(name || "DEVICE").toUpperCase()}'S DEVICE…` : "LIVE PING UNAVAILABLE FOR THIS CREW";
-      status.classList.add("show");
-    }
-    if (!ok) {
-      setTimeout(() => { status && status.classList.remove("show"); btn && btn.classList.remove("pinging"); }, 2600);
-      return;
-    }
-    // Make sure we're viewing today so the fresh fix appears
-    const todayKey = this._localDateKey(new Date());
-    if (this._crewTrailDayKey !== todayKey) { this._crewTrailDayKey = todayKey; this._refreshTrailDayChips(); }
-
-    const baseFix = this._trackerFix(ent);
-    const started = Date.now();
-    clearInterval(this._locatePoll);
-    this._locatePoll = setInterval(async () => {
-      if (!this._crewTrailPerson) { clearInterval(this._locatePoll); return; }
-      const s = this._s(ent);
-      const curFix = this._trackerFix(ent);
-      const changed = curFix && curFix !== baseFix && s?.attributes?.latitude != null;
-      if (changed) {
-        clearInterval(this._locatePoll);
-        await this._loadCrewTrailDay({ reuseMap: true });
-        // Zoom + center on the fresh point with a live blue ring
-        this._postTrailMap({ type: "sc-trail-live", lat: s.attributes.latitude, lon: s.attributes.longitude });
-        if (btn) { btn.classList.remove("pinging"); btn.classList.add("located"); setTimeout(() => btn.classList.remove("located"), 2600); }
-        if (status) {
-          status.textContent = `● LIVE FIX · ${name.toUpperCase()}`;
-          status.classList.add("show");
-          setTimeout(() => status.classList.remove("show"), 1900);
-        }
-        return;
-      }
-      if (Date.now() - started > 22000) {
-        clearInterval(this._locatePoll);
-        if (btn) btn.classList.remove("pinging");
-        if (status) { status.textContent = "NO LIVE FIX — SHOWING LAST KNOWN"; setTimeout(() => status.classList.remove("show"), 2400); }
-      }
-    }, 1500);
   }
 
   _trailArchiveSlug(personId) {
@@ -1925,7 +1748,6 @@ class SpaceCadetsPanel extends HTMLElement {
 
   _closeCrew() {
     const m = this.querySelector("#sc-modal");
-    clearInterval(this._locatePoll);
     this._lockAppScroll(false);
     if (!m) {
       this._modalOpen = false;
@@ -2108,8 +1930,6 @@ class SpaceCadetsPanel extends HTMLElement {
       if (diff > this._crewTrailDayCount) this._crewTrailDayCount = Math.min(diff, 3700);
     }
     await this._renderCrewTrail(true);
-    // Actively ask the device for a fresh GPS fix the moment the trail opens
-    this._locateNow(personId);
   }
 
   _bindTrailDayChips(root) {
@@ -2180,7 +2000,6 @@ class SpaceCadetsPanel extends HTMLElement {
                 <div class="sc-card-title" style="margin:0" id="sc-trail-name">${this._name(personId)}</div>
                 <div class="sc-modal-sub">TRAIL · ${this._name(trailEntity)}</div>
               </div>
-              <button type="button" class="sc-trail-locate" id="sc-trail-locate" title="Ping device for live location">${this._ic("target")}<span>LOCATE</span></button>
             </div>
           </div>
           <button class="sc-modal-x" id="sc-modal-x">✕</button>
@@ -2204,7 +2023,7 @@ class SpaceCadetsPanel extends HTMLElement {
             id="sc-trail-frame"
             class="sc-trail-frame"
             title="Crew location trail"
-            src="/local/spacecadets/trail-map.html?v=20260717h"
+            src="/local/spacecadets/trail-map.html?v=20260717g"
             loading="eager"
             referrerpolicy="no-referrer"
           ></iframe>
@@ -2221,11 +2040,9 @@ class SpaceCadetsPanel extends HTMLElement {
     m.querySelector("#sc-modal-bd").addEventListener("click", () => this._closeCrew());
     m.querySelector("#sc-modal-x").addEventListener("click", () => this._closeCrew());
     m.querySelector("#sc-trail-back").addEventListener("click", () => {
-      clearInterval(this._locatePoll);
       this._destroyTrailMap();
       this._renderCrew(true);
     });
-    m.querySelector("#sc-trail-locate")?.addEventListener("click", () => this._locateNow(this._crewTrailPerson));
     this._bindTrailDayChips(m);
     this._trailIframe = m.querySelector("#sc-trail-frame");
     this._trailIframeReady = false;
@@ -2386,7 +2203,6 @@ class SpaceCadetsPanel extends HTMLElement {
           this._openMediaExpand(el);
           return;
         }
-        if (act === "music-mode") { this._setMusicMode(el.dataset.mode); return; }
         if (act === "mx-close") { this._closeMediaExpand(); return; }
         if (act === "mx-back") { this._browseBack(); return; }
         if (act === "mx-open") { this._browseInto(el.dataset.mtype, el.dataset.mid, el.dataset.title); return; }
@@ -3204,31 +3020,6 @@ SpaceCadetsPanel.styles = `
 .sc-hero-state-wrap { display: flex; align-items: center; gap: 10px; }
 .sc-hero-expand { position: static; }
 
-/* ---- Crew trail locate ---- */
-.sc-trail-locate {
-  display: inline-flex; align-items: center; gap: 7px; padding: 8px 14px; border-radius: 999px;
-  border: 1px solid rgba(103,232,249,0.5); background: rgba(24,10,48,0.6); color: #67e8f9;
-  cursor: pointer; font: inherit; font-weight: 700; letter-spacing: 0.08em; font-size: 12px;
-  transition: 0.16s ease; flex: 0 0 auto;
-}
-.sc-trail-locate svg { width: 16px; height: 16px; }
-.sc-trail-identity .sc-trail-locate { margin-left: auto; }
-.sc-trail-locate:hover { background: rgba(56,189,248,0.25); box-shadow: 0 0 18px rgba(56,189,248,0.4); color: #cffafe; }
-.sc-trail-locate.pinging { color: #a5f3fc; border-color: rgba(103,232,249,0.8); box-shadow: 0 0 20px rgba(56,189,248,0.5); }
-.sc-trail-locate.pinging svg { animation: mxspin 1.1s linear infinite; }
-.sc-trail-locate.located { color: #052e16; background: linear-gradient(135deg, #67e8f9, #38bdf8); border-color: rgba(103,232,249,0.9); box-shadow: 0 0 24px rgba(56,189,248,0.7); }
-
-/* ---- Settings ---- */
-.sc-setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.sc-setting-title { font-size: 14px; letter-spacing: 0.08em; color: #f3e8ff; }
-.sc-setting-sub { color: #a5b4fc; font-size: 12px; margin-top: 3px; letter-spacing: 0.03em; }
-.sc-seg { display: inline-flex; gap: 6px; padding: 5px; border-radius: 14px; background: rgba(12,6,28,0.7); border: 1px solid rgba(216,180,254,0.22); }
-.sc-seg-btn { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 9px 16px; border-radius: 10px; border: 1px solid transparent; background: transparent; color: #c4b5fd; cursor: pointer; font: inherit; transition: 0.16s ease; }
-.sc-seg-btn strong { font-size: 13px; letter-spacing: 0.04em; }
-.sc-seg-btn em { font-style: normal; font-size: 10px; letter-spacing: 0.06em; opacity: 0.75; }
-.sc-seg-btn:hover { color: #f3e8ff; }
-.sc-seg-btn.on { background: linear-gradient(135deg, rgba(168,85,247,0.55), rgba(56,189,248,0.35)); border-color: rgba(232,121,249,0.6); color: #fff; box-shadow: 0 0 18px rgba(168,85,247,0.35); }
-
 /* ---- Full-screen media experience ---- */
 .sc-modal-root.sc-media-modal { padding: 24px; }
 .sc-mx-panel {
@@ -3238,13 +3029,7 @@ SpaceCadetsPanel.styles = `
   box-shadow: 0 40px 120px rgba(0,0,0,0.62), 0 0 70px rgba(124,58,237,0.28);
   overflow: hidden; will-change: transform; pointer-events: auto;
 }
-.sc-mx-inner { height: 100%; display: flex; flex-direction: column; }
-.sc-mx-topbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid rgba(216,180,254,0.16); background: linear-gradient(180deg, rgba(76,29,149,0.35), rgba(12,6,32,0.15)); }
-.sc-mx-brand { display: flex; align-items: center; gap: 10px; font-family: Orbitron, sans-serif; letter-spacing: 0.14em; font-size: 13px; color: #e9d5ff; }
-.sc-mx-brand svg { width: 18px; height: 18px; color: #c084fc; }
-.sc-mx-topbar .sc-mx-close { position: static; }
-.sc-mx-stage { flex: 1; min-height: 0; position: relative; display: flex; }
-.sc-mx-frame { border: 0; width: 100%; height: 100%; flex: 1; background: #0b0618; display: block; }
+.sc-mx-inner { height: 100%; display: flex; }
 .sc-mx-head {
   flex: 0 0 340px; width: 340px; padding: 26px 24px; display: flex; flex-direction: column; gap: 14px;
   position: relative; overflow-y: auto; overscroll-behavior: contain;
@@ -3275,7 +3060,7 @@ SpaceCadetsPanel.styles = `
 .sc-mx-target { margin-top: 4px; font-size: 11px; letter-spacing: 0.1em; color: #8b93c0; }
 .sc-mx-target strong { color: #67e8f9; }
 
-.sc-mx-browsewrap { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.sc-mx-browsewrap { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .sc-mx-bar { display: flex; align-items: center; gap: 10px; padding: 16px 18px; border-bottom: 1px solid rgba(216,180,254,0.14); }
 .sc-mx-icbtn {
   width: 38px; height: 38px; flex: 0 0 auto; border-radius: 10px; border: 1px solid rgba(216,180,254,0.3);
@@ -3288,7 +3073,7 @@ SpaceCadetsPanel.styles = `
 .sc-mx-searchwrap { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 10px; background: rgba(12,6,28,0.7); border: 1px solid rgba(216,180,254,0.25); color: #a5b4fc; flex: 0 0 auto; }
 .sc-mx-searchwrap svg { width: 15px; height: 15px; }
 .sc-mx-search { background: transparent; border: none; outline: none; color: #f3e8ff; font: inherit; width: 150px; }
-.sc-mx-grid { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 16px 18px; display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); align-content: start; }
+.sc-mx-grid { flex: 1; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 16px 18px; display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); align-content: start; }
 .sc-mx-item {
   display: flex; flex-direction: column; gap: 8px; background: rgba(24,10,48,0.5);
   border: 1px solid rgba(216,180,254,0.15); border-radius: 14px; padding: 10px; cursor: pointer;

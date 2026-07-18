@@ -1692,20 +1692,12 @@ class SpaceCadetsPanel extends HTMLElement {
     } catch (_) { return false; }
   }
 
-  _trackerFix(ent) {
-    const s = this._s(ent);
-    if (!s) return "";
-    const a = s.attributes || {};
-    return `${s.last_updated}|${a.latitude}|${a.longitude}`;
-  }
-
   _locateNow(personId) {
     const name = this._name(personId);
-    const ent = this._bestTrailEntity(personId);
     const ok = this._requestLocation(personId);
     const status = this.querySelector("#sc-trail-status");
     const btn = this.querySelector("#sc-trail-locate");
-    if (btn) { btn.classList.remove("located"); btn.classList.toggle("pinging", ok); }
+    if (btn) btn.classList.toggle("pinging", ok);
     if (status) {
       status.textContent = ok ? `PINGING ${(name || "DEVICE").toUpperCase()}'S DEVICE…` : "LIVE PING UNAVAILABLE FOR THIS CREW";
       status.classList.add("show");
@@ -1717,34 +1709,18 @@ class SpaceCadetsPanel extends HTMLElement {
     // Make sure we're viewing today so the fresh fix appears
     const todayKey = this._localDateKey(new Date());
     if (this._crewTrailDayKey !== todayKey) { this._crewTrailDayKey = todayKey; this._refreshTrailDayChips(); }
-
-    const baseFix = this._trackerFix(ent);
-    const started = Date.now();
+    let tries = 0;
     clearInterval(this._locatePoll);
-    this._locatePoll = setInterval(async () => {
+    this._locatePoll = setInterval(() => {
+      tries++;
       if (!this._crewTrailPerson) { clearInterval(this._locatePoll); return; }
-      const s = this._s(ent);
-      const curFix = this._trackerFix(ent);
-      const changed = curFix && curFix !== baseFix && s?.attributes?.latitude != null;
-      if (changed) {
-        clearInterval(this._locatePoll);
-        await this._loadCrewTrailDay({ reuseMap: true });
-        // Zoom + center on the fresh point with a live blue ring
-        this._postTrailMap({ type: "sc-trail-live", lat: s.attributes.latitude, lon: s.attributes.longitude });
-        if (btn) { btn.classList.remove("pinging"); btn.classList.add("located"); setTimeout(() => btn.classList.remove("located"), 2600); }
-        if (status) {
-          status.textContent = `● LIVE FIX · ${name.toUpperCase()}`;
-          status.classList.add("show");
-          setTimeout(() => status.classList.remove("show"), 1900);
-        }
-        return;
-      }
-      if (Date.now() - started > 22000) {
+      this._loadCrewTrailDay({ reuseMap: true });
+      if (tries >= 3) {
         clearInterval(this._locatePoll);
         if (btn) btn.classList.remove("pinging");
-        if (status) { status.textContent = "NO LIVE FIX — SHOWING LAST KNOWN"; setTimeout(() => status.classList.remove("show"), 2400); }
+        if (status) { status.textContent = "LIVE LOCATION UPDATED"; setTimeout(() => status.classList.remove("show"), 1500); }
       }
-    }, 1500);
+    }, 3500);
   }
 
   _trailArchiveSlug(personId) {
@@ -2204,7 +2180,7 @@ class SpaceCadetsPanel extends HTMLElement {
             id="sc-trail-frame"
             class="sc-trail-frame"
             title="Crew location trail"
-            src="/local/spacecadets/trail-map.html?v=20260717h"
+            src="/local/spacecadets/trail-map.html?v=20260717g"
             loading="eager"
             referrerpolicy="no-referrer"
           ></iframe>
@@ -3216,7 +3192,6 @@ SpaceCadetsPanel.styles = `
 .sc-trail-locate:hover { background: rgba(56,189,248,0.25); box-shadow: 0 0 18px rgba(56,189,248,0.4); color: #cffafe; }
 .sc-trail-locate.pinging { color: #a5f3fc; border-color: rgba(103,232,249,0.8); box-shadow: 0 0 20px rgba(56,189,248,0.5); }
 .sc-trail-locate.pinging svg { animation: mxspin 1.1s linear infinite; }
-.sc-trail-locate.located { color: #052e16; background: linear-gradient(135deg, #67e8f9, #38bdf8); border-color: rgba(103,232,249,0.9); box-shadow: 0 0 24px rgba(56,189,248,0.7); }
 
 /* ---- Settings ---- */
 .sc-setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }

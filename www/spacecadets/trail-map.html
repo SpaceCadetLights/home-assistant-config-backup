@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Space Cadets Trail Map</title>
+  <link rel="stylesheet" href="/local/spacecadets/leaflet/leaflet.css" />
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #1a2332; }
+    #map { width: 100%; height: 100%; background: #1a2332; }
+    .leaflet-container { background: #1a2332; font: 12px/1.4 system-ui, sans-serif; }
+    /* Keep HA parent CSS out — this document is isolated */
+    img.leaflet-tile { max-width: none !important; max-height: none !important; }
+    .endpoint {
+      width: 24px; height: 24px; border-radius: 50%;
+      display: grid; place-items: center;
+      font: 700 11px/1 system-ui, sans-serif; color: #041016;
+      box-shadow: 0 0 12px rgba(103, 232, 249, 0.7);
+    }
+    .endpoint.start { background: #86efac; }
+    .endpoint.end { background: #67e8f9; }
+    .home-pin {
+      width: 22px; height: 22px; border-radius: 50%;
+      display: grid; place-items: center; color: #fff; font-size: 11px;
+      background: radial-gradient(circle at 40% 35%, #fff, #e879f9 60%, #7c3aed);
+      box-shadow: 0 0 14px rgba(232, 121, 249, 0.85);
+    }
+    .leaflet-control-zoom a {
+      background: rgba(12, 6, 28, 0.92) !important;
+      color: #e9d5ff !important;
+      border-color: rgba(216, 180, 254, 0.35) !important;
+    }
+    .live-fix { position: relative; width: 30px; height: 30px; }
+    .live-fix .lf-dot {
+      position: absolute; left: 50%; top: 50%; width: 15px; height: 15px; margin: -7.5px 0 0 -7.5px;
+      border-radius: 50%; background: #38bdf8;
+      box-shadow: 0 0 14px #38bdf8, 0 0 0 2px rgba(255,255,255,0.95) inset;
+    }
+    .live-fix .lf-ring {
+      position: absolute; left: 50%; top: 50%; width: 15px; height: 15px; margin: -7.5px 0 0 -7.5px;
+      border-radius: 50%; border: 2px solid #67e8f9; animation: lfpulse 1.8s ease-out infinite;
+    }
+    .live-fix .lf-ring.d2 { animation-delay: 0.9s; }
+    @keyframes lfpulse { 0% { transform: scale(1); opacity: 0.9; } 100% { transform: scale(3.6); opacity: 0; } }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script src="/local/spacecadets/leaflet/leaflet.js"></script>
+  <script>
+    (function () {
+      const homeDefault = { lat: 35.6285, lon: -82.6036 };
+      const map = L.map("map", {
+        zoomControl: true,
+        attributionControl: false,
+        preferCanvas: false,
+      });
+
+      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        minZoom: 2,
+        subdomains: "abcd",
+        tileSize: 256,
+        detectRetina: false,
+        updateWhenZooming: false,
+        keepBuffer: 6,
+      }).addTo(map);
+
+      map.setView([homeDefault.lat, homeDefault.lon], 13);
+
+      let layer = null;
+      let liveMarker = null;
+
+      function clearTrail() {
+        if (layer) {
+          map.removeLayer(layer);
+          layer = null;
+        }
+      }
+
+      function clearLive() {
+        if (liveMarker) {
+          map.removeLayer(liveMarker);
+          liveMarker = null;
+        }
+      }
+
+      function showLive(lat, lon) {
+        if (lat == null || lon == null) return;
+        clearLive();
+        liveMarker = L.marker([lat, lon], {
+          interactive: false,
+          zIndexOffset: 1000,
+          icon: L.divIcon({
+            className: "",
+            html: '<div class="live-fix"><span class="lf-ring"></span><span class="lf-ring d2"></span><span class="lf-dot"></span></div>',
+            iconSize: [30, 30],
+            iconAnchor: [15, 15],
+          }),
+        }).addTo(map);
+        map.flyTo([lat, lon], 16, { animate: true, duration: 1.1 });
+        invalidate();
+      }
+
+      function setTrail(msg) {
+        clearTrail();
+        clearLive();
+        const home = msg.home || homeDefault;
+        const pts = Array.isArray(msg.points) ? msg.points : [];
+        const parts = [];
+
+        parts.push(
+          L.marker([home.lat, home.lon], {
+            interactive: false,
+            icon: L.divIcon({
+              className: "",
+              html: '<div class="home-pin">✦</div>',
+              iconSize: [22, 22],
+              iconAnchor: [11, 11],
+            }),
+          })
+        );
+
+        if (!pts.length) {
+          layer = L.layerGroup(parts).addTo(map);
+          map.setView([home.lat, home.lon], 13);
+          invalidate();
+          return;
+        }
+
+        const latlngs = pts.map((p) => L.latLng(p[0], p[1]));
+
+        // Glow under, line on top — both in overlay pane (above tiles)
+        parts.push(
+          L.polyline(latlngs, {
+            color: "#c026d3",
+            weight: 14,
+            opacity: 0.4,
+            lineJoin: "round",
+            lineCap: "round",
+            interactive: false,
+          })
+        );
+        parts.push(
+          L.polyline(latlngs, {
+            color: "#22d3ee",
+            weight: 5,
+            opacity: 1,
+            lineJoin: "round",
+            lineCap: "round",
+            interactive: false,
+          })
+        );
+
+        const step = pts.length > 40 ? Math.ceil(pts.length / 28) : 1;
+        for (let i = 1; i < latlngs.length - 1; i += step) {
+          parts.push(
+            L.circleMarker(latlngs[i], {
+              radius: 3.5,
+              color: "#f0abfc",
+              weight: 1,
+              fillColor: "#67e8f9",
+              fillOpacity: 0.95,
+              interactive: false,
+            })
+          );
+        }
+
+        parts.push(
+          L.marker(latlngs[0], {
+            interactive: false,
+            icon: L.divIcon({
+              className: "",
+              html: '<div class="endpoint start">A</div>',
+              iconSize: [24, 24],
+              iconAnchor: [12, 12],
+            }),
+          })
+        );
+        parts.push(
+          L.marker(latlngs[latlngs.length - 1], {
+            interactive: false,
+            icon: L.divIcon({
+              className: "",
+              html: '<div class="endpoint end">B</div>',
+              iconSize: [24, 24],
+              iconAnchor: [12, 12],
+            }),
+          })
+        );
+
+        layer = L.layerGroup(parts).addTo(map);
+        map.fitBounds(L.latLngBounds(latlngs).pad(0.18), {
+          animate: false,
+          maxZoom: 15,
+          padding: [28, 28],
+        });
+        invalidate();
+      }
+
+      function invalidate() {
+        setTimeout(() => map.invalidateSize({ animate: false }), 30);
+        setTimeout(() => map.invalidateSize({ animate: false }), 160);
+        setTimeout(() => map.invalidateSize({ animate: false }), 400);
+      }
+
+      window.addEventListener("message", (ev) => {
+        const data = ev.data;
+        if (!data || typeof data !== "object") return;
+        if (data.type === "sc-trail-set") setTrail(data);
+        if (data.type === "sc-trail-live") showLive(data.lat, data.lon);
+        if (data.type === "sc-trail-resize") invalidate();
+      });
+
+      window.addEventListener("resize", invalidate);
+
+      // Ready handshake for parent panel
+      function ping() {
+        try {
+          parent.postMessage({ type: "sc-trail-ready" }, "*");
+        } catch (_) {}
+      }
+      ping();
+      map.whenReady(ping);
+    })();
+  </script>
+</body>
+</html>

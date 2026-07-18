@@ -1,0 +1,47 @@
+# Space Cadets — Nebula voice control
+# "Nebula" is the branded name for our WLED lighting. For now the master device
+# is Trillium (light.trillium), which UDP-syncs to any other WLED on the LAN.
+# Advanced params (effect / palette / speed / distortion) route through
+# script.nebula_apply so future devices can be added in ONE place.
+language: "en"
+lists:
+  effect:
+    wildcard: true
+  palette:
+    wildcard: true
+  speed:
+    range:
+      from: 0
+      to: 255
+  distortion:
+    range:
+      from: 0
+      to: 255
+intents:
+  NebulaEffect:
+    data:
+      - sentences:
+          - "(set|change|make|switch|turn) [the] nebula [light] [to] [turn] [to] effect [to] {effect}"
+          - "nebula [light] effect [to] {effect}"
+  NebulaPalette:
+    data:
+      - sentences:
+          - "(set|change|make|switch) [the] nebula [light] [to] palette [to] {palette}"
+          - "nebula [light] palette [to] {palette}"
+  NebulaSpeed:
+    data:
+      - sentences:
+          - "(set|change|make) [the] nebula [light] speed [to] {speed}"
+          - "nebula [light] speed [to] {speed}"
+  NebulaDistortion:
+    data:
+      - sentences:
+          - "(set|change|make) [the] nebula [light] distortion [to] {distortion}"
+          - "nebula [light] distortion [to] {distortion}"
+  NebulaScene:
+    data:
+      - sentences:
+          - "(set|change|make|switch|turn) [the] nebula [light] [to] [turn] [to] effect {effect} [and] speed {speed} [and] distortion {distortion}"
+          - "(set|change|make|switch|turn) [the] nebula [light] [to] [turn] [to] effect {effect} [and] speed {speed}"
+          - "(set|change|make|switch|turn) [the] nebula [light] [to] [turn] [to] effect {effect} [and] distortion {distortion}"
+          - "(set|change|make|switch|turn) [the] nebula [light] [to] speed {speed} [and] distortion {distortion}"

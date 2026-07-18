@@ -1720,12 +1720,20 @@ class SpaceCadetsPanel extends HTMLElement {
 
     const baseFix = this._trackerFix(ent);
     const started = Date.now();
+    let pings = 1;              // already sent one above
+    let lastPing = Date.now();
     clearInterval(this._locatePoll);
     this._locatePoll = setInterval(async () => {
       if (!this._crewTrailPerson) { clearInterval(this._locatePoll); return; }
       const s = this._s(ent);
       const curFix = this._trackerFix(ent);
       const changed = curFix && curFix !== baseFix && s?.attributes?.latitude != null;
+      // Re-send the wake push a couple more times (iOS silent pushes are unreliable)
+      if (!changed && pings < 3 && Date.now() - lastPing >= 5000) {
+        this._requestLocation(personId);
+        pings++;
+        lastPing = Date.now();
+      }
       if (changed) {
         clearInterval(this._locatePoll);
         await this._loadCrewTrailDay({ reuseMap: true });
@@ -1739,10 +1747,10 @@ class SpaceCadetsPanel extends HTMLElement {
         }
         return;
       }
-      if (Date.now() - started > 22000) {
+      if (Date.now() - started > 30000) {
         clearInterval(this._locatePoll);
         if (btn) btn.classList.remove("pinging");
-        if (status) { status.textContent = "NO LIVE FIX — SHOWING LAST KNOWN"; setTimeout(() => status.classList.remove("show"), 2400); }
+        if (status) { status.textContent = "NO LIVE FIX — SHOWING LAST KNOWN"; setTimeout(() => status.classList.remove("show"), 2800); }
       }
     }, 1500);
   }

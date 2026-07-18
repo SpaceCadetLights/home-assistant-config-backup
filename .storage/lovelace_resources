@@ -18,6 +18,11 @@
         "id": "7eb98dd8f582420b8ccb41c43e2f3e44",
         "url": "/local/community/lovelace-card-mod/card-mod.js",
         "type": "module"
+      },
+      {
+        "id": "ae23b627388442ee89d3375f3bc26b3a",
+        "url": "/local/community/weather-radar-card/weather-radar-card.js?v=3.7.2",
+        "type": "module"
       }
     ]
   }

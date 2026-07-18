@@ -849,6 +849,7 @@ class SpaceCadetsPanel extends HTMLElement {
     if (view && !(active && view.contains(active) && ["INPUT", "SELECT"].includes(active.tagName))) {
       // Keep the live radar node across re-renders so RainViewer does not reload constantly.
       const keepRadar = view.querySelector("#sc-radar-keep");
+      view.classList.toggle("ov", this._tab === "overview");
       if (this._tab === "overview") view.innerHTML = this._htmlOverview();
       else if (this._tab === "lighting") view.innerHTML = this._htmlLighting();
       else if (this._tab === "media") view.innerHTML = this._htmlMedia();
@@ -923,13 +924,12 @@ class SpaceCadetsPanel extends HTMLElement {
         </div>
       </div>
 
-      <div class="sc-row weather glass">
-        ${this._htmlWeatherRadar()}
+      <div class="sc-ov-nebula">
+        ${this._renderNebula()}
       </div>
 
-      <div class="sc-row mantra glass">
-        <div class="sc-astro"></div>
-        <p>THE UNIVERSE IS OUR CANVAS.<br/>LIGHT IS OUR LANGUAGE.<br/><strong>WE ARE SPACE CADETS.</strong></p>
+      <div class="sc-row weather glass">
+        ${this._htmlWeatherRadar()}
       </div>
 
       <div class="sc-row env glass">
@@ -944,6 +944,11 @@ class SpaceCadetsPanel extends HTMLElement {
             <div class="spark s2"></div>
           </div>
         </div>
+      </div>
+
+      <div class="sc-row mantra glass">
+        <div class="sc-astro"></div>
+        <p>THE UNIVERSE IS OUR CANVAS.<br/>LIGHT IS OUR LANGUAGE.<br/><strong>WE ARE SPACE CADETS.</strong></p>
       </div>
     `;
   }
@@ -1720,12 +1725,20 @@ class SpaceCadetsPanel extends HTMLElement {
 
     const baseFix = this._trackerFix(ent);
     const started = Date.now();
+    let pings = 1;              // already sent one above
+    let lastPing = Date.now();
     clearInterval(this._locatePoll);
     this._locatePoll = setInterval(async () => {
       if (!this._crewTrailPerson) { clearInterval(this._locatePoll); return; }
       const s = this._s(ent);
       const curFix = this._trackerFix(ent);
       const changed = curFix && curFix !== baseFix && s?.attributes?.latitude != null;
+      // Re-send the wake push a couple more times (iOS silent pushes are unreliable)
+      if (!changed && pings < 3 && Date.now() - lastPing >= 5000) {
+        this._requestLocation(personId);
+        pings++;
+        lastPing = Date.now();
+      }
       if (changed) {
         clearInterval(this._locatePoll);
         await this._loadCrewTrailDay({ reuseMap: true });
@@ -1739,10 +1752,10 @@ class SpaceCadetsPanel extends HTMLElement {
         }
         return;
       }
-      if (Date.now() - started > 22000) {
+      if (Date.now() - started > 30000) {
         clearInterval(this._locatePoll);
         if (btn) btn.classList.remove("pinging");
-        if (status) { status.textContent = "NO LIVE FIX — SHOWING LAST KNOWN"; setTimeout(() => status.classList.remove("show"), 2400); }
+        if (status) { status.textContent = "NO LIVE FIX — SHOWING LAST KNOWN"; setTimeout(() => status.classList.remove("show"), 2800); }
       }
     }, 1500);
   }
@@ -3376,7 +3389,18 @@ SpaceCadetsPanel.styles = `
 @media (min-width: 901px) {
   .sc-zone-grid { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
   .sc-col.hero { max-height: 320px; }
+
+  /* Overview: 12-col layout — lights + audio core row (music beside nebula), weather below */
+  .sc-grid.ov { grid-template-columns: repeat(12, 1fr); align-items: stretch; }
+  .sc-grid.ov .sc-row.quick { grid-column: 1 / -1; }
+  .sc-grid.ov .sc-col.hero { grid-column: span 6; aspect-ratio: auto; max-height: none; min-height: 340px; }
+  .sc-grid.ov .sc-ov-nebula { grid-column: span 6; min-width: 0; display: flex; }
+  .sc-grid.ov .sc-ov-nebula > .sc-full { flex: 1; }
+  .sc-grid.ov .sc-row.weather { grid-column: 1 / -1; }
+  .sc-grid.ov .sc-row.env { grid-column: span 6; }
+  .sc-grid.ov .sc-row.mantra { grid-column: span 6; }
 }
+.sc-ov-nebula { min-width: 0; }
 `;
 
 customElements.define("spacecadets-panel", SpaceCadetsPanel);

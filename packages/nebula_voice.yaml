@@ -1,0 +1,141 @@
+# Package: nebula_voice
+# Voice control for "Nebula" (our WLED lighting). script.nebula_apply is the
+# single source of truth for WHICH devices are driven — add future WLED devices
+# to the lists in the first `variables:` block and every voice command + the
+# GUI intent will drive them together. Trillium also UDP-syncs to other WLED.
+
+script:
+  nebula_apply:
+    alias: Nebula Apply
+    description: >-
+      Drive all Nebula-capable lighting (WLED). Sets any combination of power,
+      effect, color palette, speed and distortion (intensity). Trillium is the
+      master and syncs to other WLED devices on the network.
+    fields:
+      power:
+        description: Turn Nebula on or off
+        example: "on"
+      effect:
+        description: WLED effect name (fuzzy matched, e.g. Fluid)
+        example: Fluid
+      palette:
+        description: WLED color palette name (fuzzy matched, e.g. Aurora)
+        example: Aurora
+      speed:
+        description: Speed 0-255
+        example: 10
+      distortion:
+        description: Distortion / intensity 0-255
+        example: 15
+    mode: queued
+    max: 10
+    sequence:
+      # ---- Nebula device roster (add future WLED devices here) ----
+      - variables:
+          nebula_lights:
+            - light.trillium
+          nebula_speed_numbers:
+            - number.trillium_speed
+          nebula_distort_numbers:
+            - number.trillium_intensity
+          nebula_palette_selects:
+            - select.trillium_color_palette
+      # ---- Power ----
+      - if: "{{ (power | default('') | string | lower) in ['on','true','1'] }}"
+        then:
+          - service: light.turn_on
+            target:
+              entity_id: "{{ nebula_lights }}"
+      - if: "{{ (power | default('') | string | lower) in ['off','false','0'] }}"
+        then:
+          - service: light.turn_off
+            target:
+              entity_id: "{{ nebula_lights }}"
+      # ---- Effect (fuzzy match against the master's effect_list) ----
+      - if: "{{ (effect | default('') | string | trim) != '' }}"
+        then:
+          - variables:
+              nebula_effect: >-
+                {% set opts = state_attr(nebula_lights[0], 'effect_list') or [] %}
+                {% set want = effect | string | lower | trim %}
+                {% set ns = namespace(v=none) %}
+                {%- for o in opts if ns.v is none and (o | lower) == want %}{% set ns.v = o %}{% endfor %}
+                {%- for o in opts if ns.v is none and want in (o | lower) %}{% set ns.v = o %}{% endfor %}
+                {{- ns.v if ns.v is not none else effect }}
+          - service: light.turn_on
+            target:
+              entity_id: "{{ nebula_lights }}"
+            data:
+              effect: "{{ nebula_effect | trim }}"
+      # ---- Palette (fuzzy match against the select options) ----
+      - if: "{{ (palette | default('') | string | trim) != '' }}"
+        then:
+          - variables:
+              nebula_pal: >-
+                {% set opts = state_attr(nebula_palette_selects[0], 'options') or [] %}
+                {% set want = palette | string | lower | trim %}
+                {% set ns = namespace(v=none) %}
+                {%- for o in opts if ns.v is none and (o | lower) == want %}{% set ns.v = o %}{% endfor %}
+                {%- for o in opts if ns.v is none and want in (o | lower) %}{% set ns.v = o %}{% endfor %}
+                {{- ns.v if ns.v is not none else palette }}
+          - service: select.select_option
+            target:
+              entity_id: "{{ nebula_palette_selects }}"
+            data:
+              option: "{{ nebula_pal | trim }}"
+      # ---- Speed ----
+      - if: "{{ (speed | default('') | string | trim) != '' }}"
+        then:
+          - service: number.set_value
+            target:
+              entity_id: "{{ nebula_speed_numbers }}"
+            data:
+              value: "{{ speed | int }}"
+      # ---- Distortion (WLED intensity) ----
+      - if: "{{ (distortion | default('') | string | trim) != '' }}"
+        then:
+          - service: number.set_value
+            target:
+              entity_id: "{{ nebula_distort_numbers }}"
+            data:
+              value: "{{ distortion | int }}"
+
+intent_script:
+  NebulaEffect:
+    speech:
+      text: "Nebula effect set to {{ effect }}."
+    action:
+      - service: script.nebula_apply
+        data:
+          effect: "{{ effect }}"
+  NebulaPalette:
+    speech:
+      text: "Nebula palette set to {{ palette }}."
+    action:
+      - service: script.nebula_apply
+        data:
+          palette: "{{ palette }}"
+  NebulaSpeed:
+    speech:
+      text: "Nebula speed set to {{ speed | int }}."
+    action:
+      - service: script.nebula_apply
+        data:
+          speed: "{{ speed }}"
+  NebulaDistortion:
+    speech:
+      text: "Nebula distortion set to {{ distortion | int }}."
+    action:
+      - service: script.nebula_apply
+        data:
+          distortion: "{{ distortion }}"
+  NebulaScene:
+    speech:
+      text: >-
+        Nebula updated{% if effect is defined and effect %} to {{ effect }}{% endif %}{% if speed is defined and speed != '' %}, speed {{ speed | int }}{% endif %}{% if distortion is defined and distortion != '' %}, distortion {{ distortion | int }}{% endif %}.
+    action:
+      - service: script.nebula_apply
+        data:
+          effect: "{{ effect | default('', true) }}"
+          speed: "{{ speed | default('', true) }}"
+          distortion: "{{ distortion | default('', true) }}"
