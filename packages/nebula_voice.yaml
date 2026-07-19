@@ -67,7 +67,7 @@ script:
               entity_id: "{{ nebula_lights }}"
             data:
               effect: "{{ nebula_effect | trim }}"
-      # ---- Palette (fuzzy match against the select options) ----
+      # ---- Palette (fuzzy match; and make sure it's actually visible) ----
       - if: "{{ (palette | default('') | string | trim) != '' }}"
         then:
           - variables:
@@ -83,6 +83,24 @@ script:
               entity_id: "{{ nebula_palette_selects }}"
             data:
               option: "{{ nebula_pal | trim }}"
+          # A WLED palette is only visible when the light is on AND the running
+          # effect actually uses the palette. If the caller didn't ask for a
+          # specific effect and the current effect ignores palettes (Solid/off),
+          # turn on and switch to the palette-rendering "Palette" effect.
+          - if: "{{ (power | default('') | string | lower) not in ['off','false','0'] }}"
+            then:
+              - service: light.turn_on
+                target:
+                  entity_id: "{{ nebula_lights }}"
+              - if: >-
+                  {{ (effect | default('') | string | trim) == ''
+                     and (state_attr(nebula_lights[0], 'effect') | string) in ['Solid', 'None', 'none', ''] }}
+                then:
+                  - service: light.turn_on
+                    target:
+                      entity_id: "{{ nebula_lights }}"
+                    data:
+                      effect: "Palette"
       # ---- Speed ----
       - if: "{{ (speed | default('') | string | trim) != '' }}"
         then:

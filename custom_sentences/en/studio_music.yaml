@@ -1,0 +1,26 @@
+# Space Cadets — Play music on the Full Studio group
+# Any Assist request to “play music” (optionally with a song/artist/playlist)
+# routes through script.play_studio_music → Music Assistant on
+# media_player.full_studio (our default whole-house sync group).
+language: "en"
+lists:
+  query:
+    wildcard: true
+intents:
+  PlayStudioMusic:
+    data:
+      # Generic “just play something” -> default playlist
+      - sentences:
+          - "play [some] music"
+          - "play [some] tunes"
+          - "put on [some] music"
+          - "put on [some] tunes"
+          - "start [the] music"
+          - "play music (on|in|to|through) [the] [full] studio"
+      # With a query (song / artist / album / playlist / genre)
+      - sentences:
+          - "play {query}"
+          - "play [some] {query}"
+          - "put on {query}"
+          - "play {query} (on|in|to|through) [the] [full] studio"
+          - "play [the] (song|track|artist|album|playlist|genre) {query}"

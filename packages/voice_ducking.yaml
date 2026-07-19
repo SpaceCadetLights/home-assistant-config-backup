@@ -1,0 +1,143 @@
+# Package: voice_ducking
+# When you talk to a voice satellite, briefly lower the volume of any OTHER
+# players that are playing music, then fade them back up when the assistant is
+# done. The Voice PE ducks its own audio natively, so we exclude the voice
+# player itself and duck the rest.
+#
+# IMPORTANT: with Music Assistant sync groups (e.g. media_player.full_studio)
+# BOTH the synthetic group entity AND each member report state=playing and both
+# carry a group_members list. Ducking the group AND its members makes their
+# volume_set calls fight each other, leaving playback half-restored. So we skip
+# the group entity (mass_player_type == 'group') and duck the real member
+# speakers individually, which preserves each room's balance on restore.
+
+input_text:
+  voice_duck_store:
+    name: Voice Duck Volume Store
+    max: 255
+    initial: ""
+
+script:
+  voice_duck_apply:
+    alias: Voice Duck - lower music
+    mode: restart
+    sequence:
+      - variables:
+          duck_factor: 0.45
+          exclude:
+            - media_player.home_assistant_voice_0aab68
+            - media_player.home_assistant_voice_0aab68_media_player
+      - variables:
+          # Playing players w/ volume, minus Voice PE, minus the synthetic MA
+          # group entity. Non-MA players have no mass_player_type -> kept.
+          targets: >-
+            {% set ns = namespace(t=[]) %}
+            {% for s in states.media_player if s.state == 'playing'
+                  and 'volume_level' in s.attributes
+                  and s.attributes.volume_level is not none
+                  and s.entity_id not in exclude
+                  and (s.attributes.mass_player_type | default('')) != 'group' %}
+            {% set ns.t = ns.t + [s.entity_id] %}
+            {% endfor %}
+            {{ ns.t }}
+      - condition: template
+        value_template: "{{ targets | length > 0 }}"
+      # Don't clobber an existing snapshot if we're already ducked
+      - condition: template
+        value_template: "{{ states('input_text.voice_duck_store') in ['', 'unknown', 'unavailable'] }}"
+      - variables:
+          store: >-
+            {% set ns = namespace(items=[]) %}
+            {% for e in targets %}{% set ns.items = ns.items + [(e, state_attr(e,'volume_level'))] %}{% endfor %}
+            {{ dict(ns.items) | to_json }}
+      - service: input_text.set_value
+        target:
+          entity_id: input_text.voice_duck_store
+        data:
+          value: "{{ store }}"
+      - repeat:
+          for_each: "{{ targets }}"
+          sequence:
+            - service: media_player.volume_set
+              target:
+                entity_id: "{{ repeat.item }}"
+              data:
+                volume_level: "{{ (state_attr(repeat.item, 'volume_level') | float(0.3) * duck_factor) | round(3) }}"
+
+  voice_duck_restore:
+    alias: Voice Duck - restore music
+    mode: restart
+    sequence:
+      - condition: template
+        value_template: "{{ states('input_text.voice_duck_store') not in ['', 'unknown', 'unavailable'] }}"
+      - variables:
+          data: "{{ states('input_text.voice_duck_store') | from_json }}"
+      # Flat multi-stage fade back up (nested repeats don't reliably pass vars)
+      - repeat:
+          for_each: "{{ data | list }}"
+          sequence:
+            - service: media_player.volume_set
+              target:
+                entity_id: "{{ repeat.item }}"
+              data:
+                volume_level: "{{ (data[repeat.item] | float(0.3) * 0.7) | round(3) }}"
+      - delay:
+          milliseconds: 160
+      - repeat:
+          for_each: "{{ data | list }}"
+          sequence:
+            - service: media_player.volume_set
+              target:
+                entity_id: "{{ repeat.item }}"
+              data:
+                volume_level: "{{ (data[repeat.item] | float(0.3) * 0.87) | round(3) }}"
+      - delay:
+          milliseconds: 160
+      - repeat:
+          for_each: "{{ data | list }}"
+          sequence:
+            - service: media_player.volume_set
+              target:
+                entity_id: "{{ repeat.item }}"
+              data:
+                volume_level: "{{ data[repeat.item] | float(0.3) }}"
+      - service: input_text.set_value
+        target:
+          entity_id: input_text.voice_duck_store
+        data:
+          value: ""
+
+automation:
+  - id: voice_duck_start
+    alias: Voice - duck music when talking
+    mode: restart
+    trigger:
+      - platform: state
+        entity_id:
+          - assist_satellite.home_assistant_voice_0aab68_assist_satellite
+          - assist_satellite.assist_microphone
+    condition:
+      - condition: template
+        value_template: >-
+          {{ trigger.from_state.state == 'idle'
+             and trigger.to_state.state not in ['idle', 'unavailable', 'unknown'] }}
+    action:
+      - service: script.voice_duck_apply
+
+  - id: voice_duck_end
+    alias: Voice - restore music after talking
+    mode: restart
+    trigger:
+      - platform: state
+        entity_id:
+          - assist_satellite.home_assistant_voice_0aab68_assist_satellite
+          - assist_satellite.assist_microphone
+        to: "idle"
+    condition:
+      # Only restore once ALL satellites are back to idle
+      - condition: template
+        value_template: >-
+          {{ states.assist_satellite
+             | selectattr('state','ne','idle') | list | length == 0 }}
+    action:
+      - service: script.voice_duck_restore

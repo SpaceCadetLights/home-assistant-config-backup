@@ -1,0 +1,57 @@
+# Package: studio_music
+# “Play music” on any Assist assistant -> Music Assistant on the Full Studio
+# whole-house sync group. script.play_studio_music is the single place that
+# defines the default target player and the default playlist.
+
+script:
+  play_studio_music:
+    alias: Play Studio Music
+    description: >-
+      Play music through Music Assistant on the Full Studio group. With no query
+      (or a generic word like "music") it plays the default playlist; otherwise
+      it searches Music Assistant and plays the requested song / artist / album /
+      playlist / genre. Use this whenever someone asks to play music.
+    fields:
+      query:
+        description: What to play (song, artist, album, playlist, genre). Empty = default playlist.
+        example: "Bonobo"
+    mode: restart
+    sequence:
+      # ---- Defaults (change target player or default playlist here) ----
+      - variables:
+          target_player: media_player.full_studio
+          default_uri: "library://playlist/1"   # MA "All favorited tracks"
+          q: "{{ query | default('', true) | string | trim }}"
+          generic: >-
+            {{ q == '' or (q | lower) in
+               ['music','some music','tunes','some tunes','something','songs',
+                'some songs','my music','a song','anything','some tune','tune'] }}
+      - choose:
+          - conditions: "{{ generic }}"
+            sequence:
+              - service: music_assistant.play_media
+                target:
+                  entity_id: "{{ target_player }}"
+                data:
+                  media_id: "{{ default_uri }}"
+        default:
+          - service: music_assistant.play_media
+            target:
+              entity_id: "{{ target_player }}"
+            data:
+              media_id: "{{ q }}"
+
+intent_script:
+  PlayStudioMusic:
+    speech:
+      text: >-
+        {% set q = query | default('', true) | string | trim %}
+        {%- if q == '' or (q | lower) in ['music','some music','tunes','some tunes','something','songs','some songs','my music','a song','anything','tune'] -%}
+        Playing music in the studio.
+        {%- else -%}
+        Playing {{ q }} in the studio.
+        {%- endif -%}
+    action:
+      - service: script.play_studio_music
+        data:
+          query: "{{ query | default('', true) }}"

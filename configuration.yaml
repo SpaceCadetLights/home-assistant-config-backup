@@ -86,16 +86,34 @@ rest_command:
         }
       }
 
+# Sinric gives no state feedback, so track the blinds' state from the last
+# command via a persistent helper -> the cover always shows open/closed.
+input_boolean:
+  smart_blinds_open:
+    name: Smart Blinds Open
+    icon: mdi:blinds
+
 template:
   - cover:
       - name: "Smart Blinds"
         unique_id: sinric_smart_blinds
+        device_class: blind
+        state: "{{ 'open' if is_state('input_boolean.smart_blinds_open', 'on') else 'closed' }}"
 
         open_cover:
           - action: rest_command.sinric_blinds_open
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.smart_blinds_open
 
         close_cover:
           - action: rest_command.sinric_blinds_close
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.smart_blinds_open
 
         stop_cover:
           - action: rest_command.sinric_blinds_close
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.smart_blinds_open

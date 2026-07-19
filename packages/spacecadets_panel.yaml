@@ -4,6 +4,6 @@ panel_custom:
     sidebar_title: Space Cadets
     sidebar_icon: mdi:rocket-launch
     url_path: spacecadets
-    js_url: /local/spacecadets/panel.20260717t.js
+    js_url: /local/spacecadets/panel.20260718e.js
     embed_iframe: false
     require_admin: false
