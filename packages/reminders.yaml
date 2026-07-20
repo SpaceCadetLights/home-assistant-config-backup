@@ -1,0 +1,282 @@
+# Voice reminders + persistent reminder store for the Space Cadets GUI.
+#
+# custom_sentences/en/reminders.yaml → SetReminder intent → script.reminder_add
+#   → stores the reminder in sensor.sc_reminders (restart-safe, trigger-based)
+#   → automation.sc_reminder_tick announces due reminders (twice, 30s apart)
+#   → GUI reads sensor.sc_reminders.attributes.items and can dismiss / pin.
+#
+# Reminder item schema:
+#   { id, message, due (ISO), pinned (bool), announced (bool), created (ISO) }
+#
+# GOTCHAS:
+# - Store event key is `reminders` (NOT `items` — collides with dict.items in Jinja).
+# - After every store write, wait until the new id appears on the sensor before
+#   finishing (trigger-based sensors update async; without the wait, queued adds race).
+# - Unmatched intent slots need `| default(...)` BEFORE `| int`.
+# - Never use a bare "remind me {task}" sentence — it swallows time phrases.
+
+template:
+  - trigger:
+      - trigger: event
+        event_type: sc_reminders_set
+    sensor:
+      - name: SC Reminders
+        unique_id: sc_reminders
+        icon: mdi:bell-ring
+        state: "{{ trigger.event.data.reminders | default([], true) | count }}"
+        attributes:
+          items: "{{ trigger.event.data.reminders | default([], true) }}"
+
+script:
+  reminder_announce:
+    alias: Reminder Announce (twice)
+    description: >-
+      Speak a reminder on the Voice PE satellite with a chime, then repeat once
+      more 30 seconds later (two total).
+    fields:
+      message:
+        description: The reminder text to speak (action only — no time phrase).
+        example: take the bread out of the oven
+        required: true
+      delay_seconds:
+        description: Seconds to wait before the first announcement (0 = soon).
+        example: 300
+    mode: parallel
+    max: 10
+    sequence:
+      - variables:
+          sat: assist_satellite.home_assistant_voice_0aab68_assist_satellite
+          spoken: "{{ (message | default('', true) | trim) or 'your reminder' }}"
+          wait_s: "{{ delay_seconds | default(0) | int(0) }}"
+      - delay:
+          seconds: "{{ wait_s if wait_s > 0 else 3 }}"
+      - repeat:
+          count: 2
+          sequence:
+            - action: assist_satellite.announce
+              target:
+                entity_id: "{{ sat }}"
+              data:
+                message: "Reminder: {{ spoken }}"
+            - if: "{{ repeat.index < 2 }}"
+              then:
+                - delay:
+                    seconds: 30
+
+  reminder_add:
+    alias: Reminder Add
+    description: >-
+      Schedule a reminder. message = what to remind about (action only, e.g.
+      "take medicine" — never include the time phrase). delay_seconds = seconds
+      from NOW until due (600 = 10 minutes). Do not use 0 unless the user asked
+      for an immediate reminder.
+    fields:
+      message:
+        description: What to remind about (action only, no time words).
+        required: true
+        example: take medicine
+      delay_seconds:
+        description: Seconds from now until due.
+        example: 600
+        required: true
+    mode: queued
+    max: 20
+    sequence:
+      - variables:
+          cur: "{{ state_attr('sensor.sc_reminders','items') | default([], true) }}"
+          secs: "{{ [delay_seconds | default(0) | int(0), 0] | max }}"
+          msg: "{{ (message | default('', true) | trim) or 'Reminder' }}"
+          immediate: "{{ secs <= 10 }}"
+          new_id: "{{ (now().timestamp() * 1000) | int | string }}"
+      - event: sc_reminders_set
+        event_data:
+          reminders: >-
+            {{ cur + [{
+              'id': new_id,
+              'message': msg,
+              'due': (now() + timedelta(seconds=secs)).isoformat(),
+              'pinned': false,
+              'announced': immediate,
+              'created': now().isoformat()
+            }] }}
+      # Wait for the trigger-based sensor to actually store this id (prevents races).
+      - wait_template: >-
+          {{ new_id in (state_attr('sensor.sc_reminders','items') | default([], true)
+             | map(attribute='id') | map('string') | list) }}
+        timeout: "00:00:05"
+        continue_on_timeout: true
+      - if: "{{ immediate }}"
+        then:
+          - action: script.turn_on
+            target:
+              entity_id: script.reminder_announce
+            data:
+              variables:
+                message: "{{ msg }}"
+                delay_seconds: 0
+
+  reminder_dismiss:
+    alias: Reminder Dismiss
+    fields:
+      id:
+        description: The reminder id to remove.
+        required: true
+    mode: queued
+    max: 20
+    sequence:
+      - variables:
+          cur: "{{ state_attr('sensor.sc_reminders','items') | default([], true) }}"
+          tid: "{{ id | string }}"
+      - event: sc_reminders_set
+        event_data:
+          reminders: "{{ cur | rejectattr('id','equalto', tid) | list }}"
+      - wait_template: >-
+          {{ tid not in (state_attr('sensor.sc_reminders','items') | default([], true)
+             | map(attribute='id') | map('string') | list) }}
+        timeout: "00:00:05"
+        continue_on_timeout: true
+
+  reminder_clear_unpinned:
+    alias: Reminder Clear Unpinned
+    mode: single
+    sequence:
+      - event: sc_reminders_set
+        event_data:
+          reminders: >-
+            {{ state_attr('sensor.sc_reminders','items') | default([], true)
+               | selectattr('pinned') | list }}
+      - delay:
+          milliseconds: 400
+
+  reminder_pin_toggle:
+    alias: Reminder Pin Toggle
+    fields:
+      id:
+        description: The reminder id to pin/unpin.
+        required: true
+    mode: queued
+    max: 20
+    sequence:
+      - variables:
+          cur: "{{ state_attr('sensor.sc_reminders','items') | default([], true) }}"
+      - event: sc_reminders_set
+        event_data:
+          reminders: >-
+            {%- set tid = id | string -%}
+            {%- set ns = namespace(out=[]) -%}
+            {%- for r in cur -%}
+              {%- if (r.id | string) == tid -%}
+                {%- set ns.out = ns.out + [ r | combine({'pinned': not (r.pinned | default(false))}) ] -%}
+              {%- else -%}
+                {%- set ns.out = ns.out + [r] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.out }}
+      - delay:
+          milliseconds: 400
+
+automation:
+  - id: sc_reminder_tick
+    alias: SC Reminder tick (announce due reminders)
+    mode: single
+    triggers:
+      - trigger: time_pattern
+        seconds: "/30"
+      - trigger: homeassistant
+        event: start
+    conditions: []
+    actions:
+      - variables:
+          cur: "{{ state_attr('sensor.sc_reminders','items') | default([], true) }}"
+          due_list: >-
+            {%- set ns = namespace(out=[]) -%}
+            {%- for r in cur -%}
+              {%- if not (r.announced | default(false)) and as_datetime(r.due) is not none and as_datetime(r.due) <= now() -%}
+                {%- set ns.out = ns.out + [r] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.out }}
+      - if: "{{ due_list | length > 0 }}"
+        then:
+          - event: sc_reminders_set
+            event_data:
+              reminders: >-
+                {%- set ns = namespace(out=[]) -%}
+                {%- for r in cur -%}
+                  {%- if not (r.announced | default(false)) and as_datetime(r.due) is not none and as_datetime(r.due) <= now() -%}
+                    {%- set ns.out = ns.out + [ r | combine({'announced': true}) ] -%}
+                  {%- else -%}
+                    {%- set ns.out = ns.out + [r] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.out }}
+          - repeat:
+              for_each: "{{ due_list }}"
+              sequence:
+                - action: script.turn_on
+                  target:
+                    entity_id: script.reminder_announce
+                  data:
+                    variables:
+                      message: "{{ repeat.item.message }}"
+                      delay_seconds: 0
+
+intent_script:
+  SetReminder:
+    async_action: true
+    speech:
+      text: >-
+        {% set day = day | default('', true) | string | lower %}
+        {% set period = period | default('', true) | string | lower %}
+        {% set ampm = ampm | default('', true) | string | lower %}
+        {% set clock_h = clock_hour | default(0) | int(0) %}
+        {% set rel = (minutes | default(0) | int(0)) * 60 + (seconds | default(0) | int(0)) + (hours | default(0) | int(0)) * 3600 %}
+        {% set t = (task | default('', true) | trim) or 'that' %}
+        {%- if day == 'tonight' -%}
+        Okay, I'll remind you to {{ t }} tonight around 8.
+        {%- elif clock_h > 0 and day == 'tomorrow' -%}
+        Okay, I'll remind you to {{ t }} tomorrow at {{ clock_h }}{{ ' ' ~ ampm if ampm else ' am' }}.
+        {%- elif day == 'tomorrow' or period in ['morning','afternoon','evening','night'] -%}
+        Okay, I'll remind you to {{ t }} tomorrow {{ period if period else 'morning' }}.
+        {%- elif rel >= 3600 -%}
+        Okay, I'll remind you to {{ t }} in {{ (rel / 3600) | round(1) }} hours.
+        {%- elif rel >= 60 -%}
+        Okay, I'll remind you to {{ t }} in {{ (rel / 60) | int }} minutes.
+        {%- elif rel > 10 -%}
+        Okay, I'll remind you to {{ t }} in {{ rel }} seconds.
+        {%- else -%}
+        Okay, reminding you to {{ t }} now.
+        {%- endif -%}
+    action:
+      - variables:
+          task_clean: "{{ (task | default('', true) | trim) or 'Reminder' }}"
+          delay_secs: >-
+            {%- set day = day | default('', true) | string | lower -%}
+            {%- set period = period | default('', true) | string | lower -%}
+            {%- set ampm = ampm | default('', true) | string | lower -%}
+            {%- set clock_h = clock_hour | default(0) | int(0) -%}
+            {%- set rel = (minutes | default(0) | int(0)) * 60 + (seconds | default(0) | int(0)) + (hours | default(0) | int(0)) * 3600 -%}
+            {%- if day == 'tonight' -%}
+              {%- set target = today_at('20:00:00') -%}
+              {%- if target <= now() -%}{%- set target = target + timedelta(days=1) -%}{%- endif -%}
+              {{ (as_timestamp(target) - as_timestamp(now())) | int }}
+            {%- elif day == 'tomorrow' or period in ['morning','afternoon','evening','night'] -%}
+              {%- if clock_h > 0 -%}
+                {%- set h24 = clock_h % 12 -%}
+                {%- if ampm in ['pm','p.m.'] -%}{%- set h24 = h24 + 12 -%}{%- endif -%}
+                {%- if ampm in ['am','a.m.'] and clock_h == 12 -%}{%- set h24 = 0 -%}{%- endif -%}
+                {%- if ampm in ['pm','p.m.'] and clock_h == 12 -%}{%- set h24 = 12 -%}{%- endif -%}
+                {%- if ampm not in ['am','a.m.','pm','p.m.'] and clock_h < 8 -%}{%- set h24 = h24 + 12 -%}{%- endif -%}
+                {%- set hhmm = '%02d:00:00' | format(h24) -%}
+              {%- else -%}
+                {%- set hhmm = '14:00:00' if period == 'afternoon' else '18:00:00' if period == 'evening' else '21:00:00' if period == 'night' else '09:30:00' -%}
+              {%- endif -%}
+              {%- set target = today_at(hhmm) + timedelta(days=1) -%}
+              {{ (as_timestamp(target) - as_timestamp(now())) | int }}
+            {%- else -%}
+              {{ rel }}
+            {%- endif -%}
+      - action: script.reminder_add
+        data:
+          message: "{{ task_clean }}"
+          delay_seconds: "{{ delay_secs | int(0) }}"

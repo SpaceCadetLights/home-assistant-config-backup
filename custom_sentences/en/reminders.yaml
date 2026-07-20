@@ -1,0 +1,137 @@
+language: "en"
+
+# Voice reminders → SetReminder intent → script.reminder_add.
+# More-specific timed patterns MUST win over any immediate catch-alls.
+# Do NOT use a bare "remind me {task}" — it swallows "tomorrow morning…" into the task
+# and schedules delay=0 (fires immediately).
+
+lists:
+  minutes:
+    range:
+      from: 1
+      to: 720
+  seconds:
+    range:
+      from: 5
+      to: 300
+  hours:
+    range:
+      from: 1
+      to: 24
+  clock_hour:
+    range:
+      from: 1
+      to: 12
+  period:
+    values:
+      - morning
+      - afternoon
+      - evening
+      - night
+  task:
+    wildcard: true
+
+intents:
+  SetReminder:
+    data:
+      # ---- Relative minutes ----
+      - sentences:
+          - "remind me to {task} in {minutes} minute"
+          - "remind me to {task} in {minutes} minutes"
+          - "remind me in {minutes} minutes to {task}"
+          - "remind me in {minutes} minute to {task}"
+          - "set a reminder to {task} in {minutes} minutes"
+          - "set a reminder in {minutes} minutes to {task}"
+          - "can you remind me to {task} in {minutes} minutes"
+          - "can you remind me in {minutes} minutes to {task}"
+
+      # ---- Relative hours ----
+      - sentences:
+          - "remind me to {task} in {hours} hour"
+          - "remind me to {task} in {hours} hours"
+          - "remind me in {hours} hours to {task}"
+          - "remind me in {hours} hour to {task}"
+          - "can you remind me in {hours} hours to {task}"
+
+      # ---- Relative seconds ----
+      - sentences:
+          - "remind me to {task} in {seconds} second"
+          - "remind me to {task} in {seconds} seconds"
+          - "remind me in {seconds} seconds to {task}"
+
+      # ---- Half hour / an hour (fixed slots) ----
+      - sentences:
+          - "remind me in half an hour to {task}"
+          - "remind me to {task} in half an hour"
+          - "remind me in a half hour to {task}"
+          - "can you remind me in half an hour to {task}"
+        slots:
+          minutes: 30
+      - sentences:
+          - "remind me in an hour to {task}"
+          - "remind me to {task} in an hour"
+          - "can you remind me in an hour to {task}"
+        slots:
+          hours: 1
+
+      # ---- Tomorrow + period ----
+      # morning≈09:30 afternoon≈14:00 evening≈18:00 night≈21:00
+      - sentences:
+          - "remind me tomorrow {period} to {task}"
+          - "remind me tomorrow in the {period} to {task}"
+          - "remind me in the {period} tomorrow to {task}"
+          - "remind me to {task} tomorrow {period}"
+          - "remind me to {task} tomorrow in the {period}"
+          - "remind me to {task} in the {period} tomorrow"
+          - "can you remind me tomorrow {period} to {task}"
+          - "set a reminder tomorrow {period} to {task}"
+        slots:
+          day: tomorrow
+
+      # ---- Tomorrow (default morning 9:30) ----
+      - sentences:
+          - "remind me tomorrow to {task}"
+          - "remind me to {task} tomorrow"
+          - "can you remind me tomorrow to {task}"
+          - "set a reminder tomorrow to {task}"
+        slots:
+          day: tomorrow
+          period: morning
+
+      # ---- Tonight (default 8pm) ----
+      - sentences:
+          - "remind me tonight to {task}"
+          - "remind me to {task} tonight"
+          - "can you remind me tonight to {task}"
+        slots:
+          day: tonight
+
+      # ---- Tomorrow at N am/pm ----
+      - sentences:
+          - "remind me tomorrow at {clock_hour} a.m. to {task}"
+          - "remind me tomorrow at {clock_hour} am to {task}"
+          - "remind me tomorrow at {clock_hour} to {task}"
+          - "remind me at {clock_hour} a.m. tomorrow to {task}"
+          - "remind me at {clock_hour} am tomorrow to {task}"
+          - "remind me to {task} tomorrow at {clock_hour} a.m."
+          - "remind me to {task} tomorrow at {clock_hour} am"
+        slots:
+          day: tomorrow
+          ampm: am
+      - sentences:
+          - "remind me tomorrow at {clock_hour} p.m. to {task}"
+          - "remind me tomorrow at {clock_hour} pm to {task}"
+          - "remind me at {clock_hour} p.m. tomorrow to {task}"
+          - "remind me at {clock_hour} pm tomorrow to {task}"
+          - "remind me to {task} tomorrow at {clock_hour} p.m."
+          - "remind me to {task} tomorrow at {clock_hour} pm"
+        slots:
+          day: tomorrow
+          ampm: pm
+
+      # ---- Explicit immediate only. No bare "remind me {task}". ----
+      - sentences:
+          - "remind me to {task} right now"
+          - "remind me right now to {task}"
+          - "remind me now to {task}"
+          - "give me a reminder to {task}"

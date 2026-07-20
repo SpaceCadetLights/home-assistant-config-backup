@@ -1,81 +1,20 @@
 - id: '1755885323435'
-  alias: LaunchPad Entry Button Trigger
-  description: ''
+  alias: Entry Button — Studio Toggle
+  description: >-
+    Short press on the Entry Button runs Studio Entry Toggle (lights on/off +
+    pause/resume Full Studio music).
   triggers:
   - trigger: device
     device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
     domain: zha
     type: remote_button_short_press
     subtype: button
-  - trigger: device
-    device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
-    domain: zha
-    type: remote_button_double_press
-    subtype: button
   conditions: []
   actions:
-  - variables:
-      current_node: '{% if trigger.idx == "0" %}action_1777440307432_1_1{% else %}action_1777442063106_0{%
-        endif %}'
-      flow_context: {}
-  - alias: State Machine Loop
-    repeat:
-      until:
-      - condition: template
-        value_template: '{{ current_node == "END" }}'
-      sequence:
-      - choose:
-        - conditions:
-          - condition: template
-            value_template: '{{ current_node == "action_1777440307432_1_1" }}'
-          sequence:
-          - action: light.toggle
-            target:
-              entity_id: light.trillium
-          - variables:
-              current_node: END
-        - conditions:
-          - condition: template
-            value_template: '{{ current_node == "action_1777442063106_0" }}'
-          sequence:
-          - target:
-              entity_id:
-              - media_player.spotify_etcetre
-            action: media_player.toggle
-          - variables:
-              current_node: END
-        default:
-        - data:
-            message: 'C.A.F.E.: Unknown state "{{ current_node }}", ending flow'
-            level: warning
-          action: system_log.write
-        - variables:
-            current_node: END
-  - action: conversation.process
-    metadata: {}
-    data:
-      text: If Spotify is playing pause it if Spotify is paused play it.
-      agent_id: conversation.homeway_sage_free_chatgpt_gemini
+  - action: script.turn_on
+    target:
+      entity_id: script.studio_entry_toggle
   mode: single
-  variables:
-    _cafe_metadata:
-      version: 1
-      strategy: native
-      nodes:
-        trigger_1777440307430_0_0:
-          x: 15
-          y: 45
-        action_1777440307432_1_1:
-          x: 312
-          y: 12
-        trigger_1777440350820_0:
-          x: 15
-          y: 195
-        action_1777442063106_0:
-          x: 315
-          y: 240
-      graph_id: 732eb2ed-a365-4c82-97b4-72a46fe246be
-      graph_version: 1
 - id: '1755885936052'
   alias: Basement Motion Lights Off (MIGRATED)
   description: Migrated to packages/basement_lighting.yaml — pkg_basement_lights_off
@@ -157,8 +96,7 @@
   mode: single
 - id: '1777064054568'
   alias: Toggle Trillium Power with entry button
-  description: DISABLED — conflict resolved in LaunchPad Entry Button Trigger. Single
-    press now handled there.
+  description: DISABLED — replaced by Entry Button — Studio Toggle.
   enabled: false
   triggers:
   - device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
@@ -239,7 +177,8 @@
       graph_version: 1
 - id: '1780775906154'
   alias: Pause Spotify with double click
-  description: ''
+  description: DISABLED — Entry Button now toggles studio + Full Studio music on short press.
+  enabled: false
   triggers:
   - device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
     domain: zha
