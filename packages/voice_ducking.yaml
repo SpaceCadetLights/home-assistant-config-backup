@@ -1,15 +1,17 @@
 # Package: voice_ducking
-# When you talk to a voice satellite, briefly lower the volume of any OTHER
-# players that are playing music, then fade them back up when the assistant is
-# done. The Voice PE ducks its own audio natively, so we exclude the voice
-# player itself and duck the rest.
+# When you talk to a voice satellite, briefly lower the volume of other
+# music speakers, then fade them back when the assistant is done.
 #
-# IMPORTANT: with Music Assistant sync groups (e.g. media_player.full_studio)
-# BOTH the synthetic group entity AND each member report state=playing and both
-# carry a group_members list. Ducking the group AND its members makes their
-# volume_set calls fight each other, leaving playback half-restored. So we skip
-# the group entity (mass_player_type == 'group') and duck the real member
-# speakers individually, which preserves each room's balance on restore.
+# Hardening notes (2026-07-21):
+# - Never duck MA sync-group entities (mass_player_type == group) — duck members.
+# - Never duck players without a numeric volume_level, or Spotify Connect
+#   (no VOLUME_SET) — a failed volume_set used to abort restore and leave music
+#   stuck quiet with a non-empty snapshot store.
+# - All volume_set calls use continue_on_error so one bad player can't strand us.
+# - Always from_json the input_text state directly (HA coerces JSON-looking
+#   script variables into dicts, which breaks | from_json on the variable).
+# - Watchdogs force-restore if satellites are idle with a leftover store,
+#   on HA start, or after 90s max duck age.
 
 input_text:
   voice_duck_store:
@@ -28,16 +30,15 @@ script:
             - media_player.home_assistant_voice_0aab68
             - media_player.home_assistant_voice_0aab68_media_player
       - variables:
-          # Playing players w/ volume, minus Voice PE, minus the synthetic MA
-          # group entity. Non-MA players have no mass_player_type -> kept.
           targets: >-
             {% set ns = namespace(t=[]) %}
-            {% for s in states.media_player if s.state == 'playing'
-                  and 'volume_level' in s.attributes
-                  and s.attributes.volume_level is not none
+            {% for s in states.media_player
+                  if s.state == 'playing'
                   and s.entity_id not in exclude
-                  and (s.attributes.mass_player_type | default('')) != 'group' %}
-            {% set ns.t = ns.t + [s.entity_id] %}
+                  and not s.entity_id.startswith('media_player.spotify_')
+                  and (s.attributes.mass_player_type | default('')) != 'group'
+                  and s.attributes.volume_level is number %}
+              {% set ns.t = ns.t + [s.entity_id] %}
             {% endfor %}
             {{ ns.t }}
       - condition: template
@@ -46,23 +47,32 @@ script:
       - condition: template
         value_template: "{{ states('input_text.voice_duck_store') in ['', 'unknown', 'unavailable'] }}"
       - variables:
-          store: >-
+          store_json: >-
             {% set ns = namespace(items=[]) %}
-            {% for e in targets %}{% set ns.items = ns.items + [(e, state_attr(e,'volume_level'))] %}{% endfor %}
+            {% for e in targets %}
+              {% set v = state_attr(e, 'volume_level') %}
+              {% if v is number %}
+                {% set ns.items = ns.items + [(e, v)] %}
+              {% endif %}
+            {% endfor %}
             {{ dict(ns.items) | to_json }}
+      - condition: template
+        value_template: "{{ targets | length > 0 and store_json not in ['', '{}', 'null'] }}"
       - service: input_text.set_value
         target:
           entity_id: input_text.voice_duck_store
         data:
-          value: "{{ store }}"
+          value: "{{ store_json }}"
       - repeat:
           for_each: "{{ targets }}"
           sequence:
-            - service: media_player.volume_set
+            - continue_on_error: true
+              service: media_player.volume_set
               target:
                 entity_id: "{{ repeat.item }}"
               data:
-                volume_level: "{{ (state_attr(repeat.item, 'volume_level') | float(0.3) * duck_factor) | round(3) }}"
+                volume_level: >-
+                  {{ ([0.01, (state_attr(repeat.item, 'volume_level') | float(0.3) * duck_factor)] | max) | round(3) }}
 
   voice_duck_restore:
     alias: Voice Duck - restore music
@@ -70,37 +80,70 @@ script:
     sequence:
       - condition: template
         value_template: "{{ states('input_text.voice_duck_store') not in ['', 'unknown', 'unavailable'] }}"
+      # from_json ONLY on states() — never on a script variable (HA auto-dicts those).
       - variables:
           data: "{{ states('input_text.voice_duck_store') | from_json }}"
-      # Flat multi-stage fade back up (nested repeats don't reliably pass vars)
+          keys: >-
+            {% set d = states('input_text.voice_duck_store') | from_json %}
+            {% set ns = namespace(k=[]) %}
+            {% if d is mapping %}
+              {% for e in d %}
+                {% if d[e] is number and not e.startswith('media_player.spotify_') %}
+                  {% set ns.k = ns.k + [e] %}
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+            {{ ns.k }}
       - repeat:
-          for_each: "{{ data | list }}"
+          for_each: "{{ keys }}"
           sequence:
-            - service: media_player.volume_set
+            - continue_on_error: true
+              service: media_player.volume_set
               target:
                 entity_id: "{{ repeat.item }}"
               data:
-                volume_level: "{{ (data[repeat.item] | float(0.3) * 0.7) | round(3) }}"
+                volume_level: >-
+                  {{ ((states('input_text.voice_duck_store') | from_json)[repeat.item] | float(0.3) * 0.7) | round(3) }}
       - delay:
           milliseconds: 160
       - repeat:
-          for_each: "{{ data | list }}"
+          for_each: "{{ keys }}"
           sequence:
-            - service: media_player.volume_set
+            - continue_on_error: true
+              service: media_player.volume_set
               target:
                 entity_id: "{{ repeat.item }}"
               data:
-                volume_level: "{{ (data[repeat.item] | float(0.3) * 0.87) | round(3) }}"
+                volume_level: >-
+                  {{ ((states('input_text.voice_duck_store') | from_json)[repeat.item] | float(0.3) * 0.87) | round(3) }}
       - delay:
           milliseconds: 160
       - repeat:
-          for_each: "{{ data | list }}"
+          for_each: "{{ keys }}"
           sequence:
-            - service: media_player.volume_set
+            - continue_on_error: true
+              service: media_player.volume_set
               target:
                 entity_id: "{{ repeat.item }}"
               data:
-                volume_level: "{{ data[repeat.item] | float(0.3) }}"
+                volume_level: >-
+                  {{ (states('input_text.voice_duck_store') | from_json)[repeat.item] | float(0.3) }}
+      # Always clear — even if every volume_set no-oped — so we never stick ducked.
+      - service: input_text.set_value
+        target:
+          entity_id: input_text.voice_duck_store
+        data:
+          value: ""
+
+  voice_duck_force_clear:
+    alias: Voice Duck - force clear stuck duck
+    mode: single
+    sequence:
+      - service: script.voice_duck_restore
+      - delay:
+          milliseconds: 500
+      - condition: template
+        value_template: "{{ states('input_text.voice_duck_store') not in ['', 'unknown', 'unavailable'] }}"
       - service: input_text.set_value
         target:
           entity_id: input_text.voice_duck_store
@@ -119,25 +162,70 @@ automation:
     condition:
       - condition: template
         value_template: >-
-          {{ trigger.from_state.state == 'idle'
+          {{ trigger.from_state is not none
+             and trigger.from_state.state == 'idle'
              and trigger.to_state.state not in ['idle', 'unavailable', 'unknown'] }}
     action:
       - service: script.voice_duck_apply
 
   - id: voice_duck_end
     alias: Voice - restore music after talking
-    mode: restart
+    mode: queued
+    max: 3
     trigger:
       - platform: state
         entity_id:
           - assist_satellite.home_assistant_voice_0aab68_assist_satellite
           - assist_satellite.assist_microphone
         to: "idle"
+        for:
+          seconds: 2
     condition:
-      # Only restore once ALL satellites are back to idle
       - condition: template
-        value_template: >-
-          {{ states.assist_satellite
-             | selectattr('state','ne','idle') | list | length == 0 }}
+        value_template: "{{ states('input_text.voice_duck_store') not in ['', 'unknown', 'unavailable'] }}"
+      - condition: state
+        entity_id: assist_satellite.home_assistant_voice_0aab68_assist_satellite
+        state: idle
+      - condition: state
+        entity_id: assist_satellite.assist_microphone
+        state: idle
     action:
       - service: script.voice_duck_restore
+
+  - id: voice_duck_watchdog_idle
+    alias: Voice - duck watchdog (idle leftover)
+    mode: single
+    trigger:
+      - platform: time_pattern
+        seconds: "/20"
+      - platform: homeassistant
+        event: start
+    condition:
+      - condition: template
+        value_template: "{{ states('input_text.voice_duck_store') not in ['', 'unknown', 'unavailable'] }}"
+      - condition: state
+        entity_id: assist_satellite.home_assistant_voice_0aab68_assist_satellite
+        state: idle
+      - condition: state
+        entity_id: assist_satellite.assist_microphone
+        state: idle
+    action:
+      - service: script.voice_duck_force_clear
+
+  - id: voice_duck_watchdog_max_age
+    alias: Voice - duck watchdog (max age)
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: input_text.voice_duck_store
+        for:
+          seconds: 90
+    condition:
+      - condition: template
+        value_template: "{{ states('input_text.voice_duck_store') not in ['', 'unknown', 'unavailable'] }}"
+    action:
+      - service: system_log.write
+        data:
+          level: warning
+          message: "Voice duck store still set after 90s — force restoring music volume."
+      - service: script.voice_duck_force_clear

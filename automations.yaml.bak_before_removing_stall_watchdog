@@ -1,7 +1,8 @@
 - id: '1755885323435'
   alias: Entry Button — Studio Toggle
-  description: Short press on the Entry Button runs Studio Entry Toggle (lights on/off
-    + pause/resume Full Studio music).
+  description: >-
+    Short press on the Entry Button runs Studio Entry Toggle (lights on/off +
+    pause/resume Full Studio music).
   triggers:
   - trigger: device
     device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
@@ -176,8 +177,7 @@
       graph_version: 1
 - id: '1780775906154'
   alias: Pause Spotify with double click
-  description: DISABLED — Entry Button now toggles studio + Full Studio music on short
-    press.
+  description: DISABLED — Entry Button now toggles studio + Full Studio music on short press.
   enabled: false
   triggers:
   - device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
@@ -193,3 +193,33 @@
       entity_id: media_player.spotify_etcetre
     data: {}
   mode: single
+- id: music_stall_watchdog_full_studio
+  alias: Music - unstick stalled Full Studio playback
+  description: >-
+    If Full Studio reports playing but media_position_updated_at is stale
+    (>45s), skip to the next track. Fixes silent zombie playing states from
+    Music Assistant / Spotify stream stalls.
+  mode: single
+  triggers:
+  - trigger: time_pattern
+    seconds: "/15"
+  conditions:
+  - condition: state
+    entity_id: media_player.full_studio
+    state: playing
+  - condition: template
+    value_template: >-
+      {% set upd = state_attr('media_player.full_studio', 'media_position_updated_at') %}
+      {{ upd is not none
+         and (as_timestamp(now()) - as_timestamp(upd)) > 45 }}
+  actions:
+  - action: system_log.write
+    data:
+      level: warning
+      message: >-
+        Full Studio playback stalled (position frozen
+        {{ (as_timestamp(now()) - as_timestamp(state_attr('media_player.full_studio','media_position_updated_at'))) | int }}s).
+        Skipping to next track.
+  - action: media_player.media_next_track
+    target:
+      entity_id: media_player.full_studio
