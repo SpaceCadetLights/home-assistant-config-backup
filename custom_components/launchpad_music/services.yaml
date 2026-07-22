@@ -1,0 +1,58 @@
+get_current_track:
+  name: Get current Music Assistant track
+  description: Return the track currently playing on Full Studio (or another MA player).
+  fields:
+    entity_id:
+      name: Player
+      description: Music Assistant media player entity
+      example: media_player.full_studio
+      selector:
+        entity:
+          domain: media_player
+
+list_playlists:
+  name: List Music Assistant playlists
+  description: List library playlists (Spotify-synced when provided by Spotify).
+
+playlist_picker:
+  name: Playlist picker for current track
+  description: Current track plus playlists, with contains=true when the track is already on that playlist.
+  fields:
+    entity_id:
+      name: Player
+      example: media_player.full_studio
+      selector:
+        entity:
+          domain: media_player
+    check_membership:
+      name: Check membership
+      description: Scan playlists for the current track (slower, enables green markers).
+      default: true
+      selector:
+        boolean:
+
+add_to_playlist:
+  name: Add current track to playlist
+  description: Add the currently playing track to a playlist by name or URI. Syncs to Spotify when the playlist is Spotify-backed.
+  fields:
+    playlist:
+      name: Playlist name
+      description: Spoken / typed playlist name (e.g. 2026)
+      example: "2026"
+      selector:
+        text:
+    playlist_uri:
+      name: Playlist URI
+      example: library://playlist/608
+      selector:
+        text:
+    entity_id:
+      name: Player
+      example: media_player.full_studio
+      selector:
+        entity:
+          domain: media_player
+    track_uri:
+      name: Track URI override
+      selector:
+        text:

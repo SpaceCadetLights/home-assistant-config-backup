@@ -1,0 +1,195 @@
+# Package: voice_trillium_status
+# Soft Assist status on Trillium via palette only (effect/pattern untouched):
+#   listening  → Cloud      (predominantly blue)
+#   processing → Yellowout  (predominantly amber)
+#   responding → Aurora     (predominantly green)
+#   idle       → restore prior palette only
+# Sync stays ON so the Nebula mesh follows. Nebula voice changes to effect/
+# speed/etc. during a turn are not overwritten on restore.
+#
+# Toggle: input_boolean.voice_trillium_status (Space Cadets Nebula → RING)
+# Snapshot: input_text.voice_trillium_store = prior palette name while active.
+
+input_boolean:
+  voice_trillium_status:
+    name: Voice Trillium Status Colors
+    icon: mdi:microphone-message
+    initial: true
+
+input_text:
+  voice_trillium_store:
+    name: Voice Trillium Status Store
+    max: 255
+    initial: ""
+
+script:
+  voice_trillium_set_palette:
+    alias: Voice Trillium - set status palette
+    mode: restart
+    fields:
+      palette:
+        description: WLED palette name
+        example: Cloud
+    sequence:
+      - condition: template
+        value_template: >-
+          {{ palette is string and palette not in ['', 'unknown', 'unavailable', 'none']
+             and palette in (state_attr('select.trillium_color_palette', 'options') or []) }}
+      - continue_on_error: true
+        service: select.select_option
+        target:
+          entity_id: select.trillium_color_palette
+        data:
+          option: "{{ palette }}"
+
+  voice_trillium_begin:
+    alias: Voice Trillium - begin listening indicator
+    mode: restart
+    sequence:
+      - condition: state
+        entity_id: input_boolean.voice_trillium_status
+        state: "on"
+      - if: "{{ states('input_text.voice_trillium_store') not in ['', 'unknown', 'unavailable'] }}"
+        then:
+          - service: script.voice_trillium_set_palette
+            data:
+              palette: Cloud
+          - stop: already capturing
+      - service: input_text.set_value
+        target:
+          entity_id: input_text.voice_trillium_store
+        data:
+          value: "{{ states('select.trillium_color_palette') }}"
+      - service: script.voice_trillium_set_palette
+        data:
+          palette: Cloud
+
+  voice_trillium_restore:
+    alias: Voice Trillium - restore prior palette
+    mode: restart
+    sequence:
+      - condition: template
+        value_template: "{{ states('input_text.voice_trillium_store') not in ['', 'unknown', 'unavailable'] }}"
+      - variables:
+          raw: "{{ states('input_text.voice_trillium_store') }}"
+          prior: >-
+            {% if raw is string and raw.startswith('{') %}
+              {{ (raw | from_json)['palette'] | default('') | string | trim }}
+            {% else %}
+              {{ raw | string | trim }}
+            {% endif %}
+          current: "{{ states('select.trillium_color_palette') }}"
+      - if: "{{ current in ['Cloud', 'Yellowout', 'Aurora'] }}"
+        then:
+          - if: >-
+              {{ prior is string and prior not in ['', 'unknown', 'unavailable', 'none']
+                 and prior in (state_attr('select.trillium_color_palette', 'options') or []) }}
+            then:
+              - continue_on_error: true
+                service: select.select_option
+                target:
+                  entity_id: select.trillium_color_palette
+                data:
+                  option: "{{ prior }}"
+      - service: input_text.set_value
+        target:
+          entity_id: input_text.voice_trillium_store
+        data:
+          value: ""
+
+automation:
+  - id: voice_trillium_listening
+    alias: Voice Trillium - listening (Cloud / blue)
+    mode: restart
+    trigger:
+      - platform: state
+        entity_id: assist_satellite.home_assistant_voice_0aab68_assist_satellite
+        to: listening
+    condition:
+      - condition: state
+        entity_id: input_boolean.voice_trillium_status
+        state: "on"
+    action:
+      - service: script.voice_trillium_begin
+
+  - id: voice_trillium_processing
+    alias: Voice Trillium - thinking (Yellowout / amber)
+    mode: restart
+    trigger:
+      - platform: state
+        entity_id: assist_satellite.home_assistant_voice_0aab68_assist_satellite
+        to: processing
+    condition:
+      - condition: state
+        entity_id: input_boolean.voice_trillium_status
+        state: "on"
+      - condition: template
+        value_template: "{{ states('input_text.voice_trillium_store') not in ['', 'unknown', 'unavailable'] }}"
+    action:
+      - service: script.voice_trillium_set_palette
+        data:
+          palette: Yellowout
+
+  - id: voice_trillium_responding
+    alias: Voice Trillium - responding (Aurora / green)
+    mode: restart
+    trigger:
+      - platform: state
+        entity_id: assist_satellite.home_assistant_voice_0aab68_assist_satellite
+        to: responding
+    condition:
+      - condition: state
+        entity_id: input_boolean.voice_trillium_status
+        state: "on"
+      - condition: template
+        value_template: "{{ states('input_text.voice_trillium_store') not in ['', 'unknown', 'unavailable'] }}"
+    action:
+      - service: script.voice_trillium_set_palette
+        data:
+          palette: Aurora
+
+  - id: voice_trillium_idle
+    alias: Voice Trillium - done (restore palette)
+    mode: queued
+    max: 2
+    trigger:
+      - platform: state
+        entity_id: assist_satellite.home_assistant_voice_0aab68_assist_satellite
+        to: idle
+        for:
+          milliseconds: 400
+    condition:
+      - condition: template
+        value_template: "{{ states('input_text.voice_trillium_store') not in ['', 'unknown', 'unavailable'] }}"
+    action:
+      - service: script.voice_trillium_restore
+
+  - id: voice_trillium_toggle_off
+    alias: Voice Trillium - restore when toggle off
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: input_boolean.voice_trillium_status
+        to: "off"
+    condition:
+      - condition: template
+        value_template: "{{ states('input_text.voice_trillium_store') not in ['', 'unknown', 'unavailable'] }}"
+    action:
+      - service: script.voice_trillium_restore
+
+  - id: voice_trillium_watchdog
+    alias: Voice Trillium - idle leftover watchdog
+    mode: single
+    trigger:
+      - platform: time_pattern
+        seconds: "/30"
+      - platform: homeassistant
+        event: start
+    condition:
+      - condition: template
+        value_template: "{{ states('input_text.voice_trillium_store') not in ['', 'unknown', 'unavailable'] }}"
+      - condition: state
+        entity_id: assist_satellite.home_assistant_voice_0aab68_assist_satellite
+        state: idle
+    action:
+      - service: script.voice_trillium_restore

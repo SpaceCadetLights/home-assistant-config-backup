@@ -1,0 +1,479 @@
+"""LaunchPad helpers: add current track to Music Assistant / Spotify playlists."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+import time
+from typing import Any
+
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers.typing import ConfigType
+
+from .const import (
+    DEFAULT_PLAYER,
+    DOMAIN,
+    MASS_ENTRY_ID,
+    MEMBERSHIP_CACHE_SECONDS,
+    MEMBERSHIP_CONCURRENCY,
+    SKIP_ADD_NAMES,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _norm_name(value: str) -> str:
+    text = (value or "").casefold().strip()
+    text = re.sub(r"^[\s'\"]*(my|the)\s+", "", text)
+    text = re.sub(r"\s+playlist\s*$", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" \t\"'")
+
+
+def _playlist_id_from_uri(uri: str) -> str | None:
+    if not uri:
+        return None
+    if uri.startswith("library://playlist/"):
+        return uri.rsplit("/", 1)[-1]
+    return None
+
+
+def _track_match_keys(track_uri: str, spotify_id: str | None = None) -> set[str]:
+    keys = {track_uri}
+    if spotify_id:
+        keys.add(f"spotify:track:{spotify_id}")
+        keys.add(f"spotify://track/{spotify_id}")
+    return keys
+
+
+def _item_uris(item: Any) -> set[str]:
+    uris: set[str] = set()
+    if item is None:
+        return uris
+    if isinstance(item, dict):
+        if uri := item.get("uri"):
+            uris.add(str(uri))
+        if item_id := item.get("item_id"):
+            provider = str(item.get("provider") or "")
+            if "spotify" in provider.lower() and item_id:
+                uris.add(f"spotify:track:{item_id}")
+                uris.add(f"spotify://track/{item_id}")
+        for mapping in item.get("provider_mappings") or []:
+            if not isinstance(mapping, dict):
+                continue
+            mid = mapping.get("item_id") or mapping.get("url")
+            prov = str(
+                mapping.get("provider_domain") or mapping.get("provider_instance") or ""
+            )
+            if mid and "spotify" in prov.lower():
+                uris.add(f"spotify:track:{mid}")
+                uris.add(f"spotify://track/{mid}")
+            if mapping.get("url"):
+                uris.add(str(mapping["url"]))
+        nested = item.get("media_item")
+        if isinstance(nested, dict):
+            uris |= _item_uris(nested)
+        return uris
+    uri = getattr(item, "uri", None)
+    if uri:
+        uris.add(str(uri))
+    return uris
+
+
+def _serialize_playlist(item: dict[str, Any]) -> dict[str, Any]:
+    name = item.get("name") or ""
+    uri = item.get("uri") or ""
+    image = item.get("image")
+    if isinstance(image, dict):
+        image = image.get("path") or image.get("url")
+    return {
+        "name": name,
+        "uri": uri,
+        "image": image,
+        "id": _playlist_id_from_uri(uri),
+        "can_add": _norm_name(name) not in SKIP_ADD_NAMES,
+    }
+
+
+async def _get_mass(hass: HomeAssistant):
+    from homeassistant.components.music_assistant.helpers import get_music_assistant_client
+
+    return get_music_assistant_client(hass, MASS_ENTRY_ID)
+
+
+async def _get_current_track(hass: HomeAssistant, entity_id: str) -> dict[str, Any]:
+    resp = await hass.services.async_call(
+        "music_assistant",
+        "get_queue",
+        target={"entity_id": entity_id},
+        blocking=True,
+        return_response=True,
+    )
+    payload = (resp or {}).get(entity_id) or {}
+    current = payload.get("current_item")
+    if not current:
+        raise ServiceValidationError("Nothing is playing right now.")
+    media = current.get("media_item") or {}
+    stream = current.get("stream_details") or {}
+    spotify_id = (
+        stream.get("item_id")
+        if "spotify" in str(stream.get("provider") or "").lower()
+        else None
+    )
+    uri = media.get("uri") or current.get("uri")
+    if not uri:
+        raise ServiceValidationError("Current track has no Music Assistant URI.")
+    artists = [
+        a.get("name")
+        for a in (media.get("artists") or [])
+        if isinstance(a, dict) and a.get("name")
+    ]
+    return {
+        "uri": uri,
+        "name": media.get("name") or current.get("name") or "Unknown",
+        "artists": artists,
+        "artist": ", ".join(artists),
+        "album": (media.get("album") or {}).get("name")
+        if isinstance(media.get("album"), dict)
+        else None,
+        "image": media.get("image"),
+        "spotify_id": spotify_id,
+        "player": entity_id,
+    }
+
+def _unwrap_library_page(resp: Any) -> dict[str, Any]:
+    if not resp or not isinstance(resp, dict):
+        return {}
+    if "items" in resp:
+        return resp
+    for val in resp.values():
+        if isinstance(val, dict) and "items" in val:
+            return val
+    return resp
+
+
+async def _fetch_library_page(
+    hass: HomeAssistant, *, limit: int, offset: int
+) -> dict[str, Any]:
+    base = {
+        "config_entry_id": MASS_ENTRY_ID,
+        "media_type": "playlist",
+    }
+    for payload in (
+        {**base, "limit": limit, "offset": offset},
+        {**base, "pagination": {"limit": limit, "offset": offset}},
+    ):
+        try:
+            resp = await hass.services.async_call(
+                "music_assistant",
+                "get_library",
+                payload,
+                blocking=True,
+                return_response=True,
+            )
+            page = _unwrap_library_page(resp)
+            if page.get("items"):
+                return page
+        except Exception as err:
+            _LOGGER.debug("get_library page failed (%s): %s", payload, err)
+    return {}
+
+
+async def _list_playlists_mass(hass: HomeAssistant) -> list[dict[str, Any]]:
+    mass = await _get_mass(hass)
+    items: list[dict[str, Any]] = []
+    offset = 0
+    limit = 500
+    while offset < 5000:
+        try:
+            batch = await mass.music.get_library_playlists(limit=limit, offset=offset)
+        except TypeError:
+            batch = await mass.music.get_library_playlists(limit=limit)
+            offset = 9999
+        except Exception as err:
+            _LOGGER.debug("mass get_library_playlists failed: %s", err)
+            break
+        if isinstance(batch, dict):
+            batch = batch.get("items") or batch.get("playlists") or []
+        batch = [p for p in (batch or []) if isinstance(p, dict)]
+        if not batch:
+            break
+        items.extend(batch)
+        if len(batch) < limit:
+            break
+
+async def _list_playlists(hass: HomeAssistant) -> list[dict[str, Any]]:
+    # Use the HA music_assistant.get_library action — includes Spotify artwork.
+    items: list[dict[str, Any]] = []
+    offset = 0
+    limit = 500
+    while True:
+        resp = await hass.services.async_call(
+            "music_assistant",
+            "get_library",
+            {
+                "config_entry_id": MASS_ENTRY_ID,
+                "media_type": "playlist",
+                "limit": limit,
+                "offset": offset,
+            },
+            blocking=True,
+            return_response=True,
+        )
+        page = resp or {}
+        batch = list(page.get("items") or [])
+        items.extend(batch)
+        if len(batch) < limit:
+            break
+        offset += limit
+        if offset > 5000:
+            break
+    return [_serialize_playlist(p) for p in items if isinstance(p, dict)]
+
+
+async def _playlist_contains(
+    mass: Any,
+    playlist_id: str,
+    match_keys: set[str],
+) -> bool:
+    page = 0
+    while page < 40:
+        try:
+            result = await mass.music.get_playlist_tracks(
+                item_id=str(playlist_id),
+                provider_instance_id_or_domain="library",
+                force_refresh=False,
+                page=page,
+            )
+        except TypeError:
+            result = await mass.music.get_playlist_tracks(
+                item_id=str(playlist_id),
+                provider_instance_id_or_domain="library",
+                force_refresh=False,
+            )
+            page = 999
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("playlist %s tracks failed: %s", playlist_id, err)
+            return False
+
+        tracks = result
+        if isinstance(result, dict):
+            tracks = result.get("items") or result.get("tracks") or []
+        elif hasattr(result, "items"):
+            tracks = result.items
+        tracks = list(tracks or [])
+        if not tracks:
+            return False
+        for track in tracks:
+            if _item_uris(track) & match_keys:
+                return True
+        if len(tracks) < 25:
+            return False
+        page += 1
+    return False
+
+
+async def _scan_membership(
+    hass: HomeAssistant,
+    track: dict[str, Any],
+    playlists: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    cache = hass.data.setdefault(DOMAIN, {}).setdefault("membership_cache", {})
+    cache_key = track["uri"]
+    now = time.time()
+    cached = cache.get(cache_key)
+    if cached and now - cached["ts"] < MEMBERSHIP_CACHE_SECONDS:
+        by_uri = {p["uri"]: p.get("contains", False) for p in cached["playlists"]}
+        out = []
+        for pl in playlists:
+            row = dict(pl)
+            row["contains"] = by_uri.get(pl["uri"], False)
+            out.append(row)
+        out.sort(key=lambda p: (not p.get("contains"), (p.get("name") or "").casefold()))
+        return out
+
+    mass = await _get_mass(hass)
+    match_keys = _track_match_keys(track["uri"], track.get("spotify_id"))
+    sem = asyncio.Semaphore(MEMBERSHIP_CONCURRENCY)
+
+    async def _one(pl: dict[str, Any]) -> dict[str, Any]:
+        row = dict(pl)
+        pid = pl.get("id")
+        if not pid:
+            row["contains"] = False
+            return row
+        async with sem:
+            row["contains"] = await _playlist_contains(mass, str(pid), match_keys)
+        return row
+
+    scanned = await asyncio.gather(*[_one(pl) for pl in playlists])
+    scanned.sort(key=lambda p: (not p.get("contains"), (p.get("name") or "").casefold()))
+    cache[cache_key] = {"ts": now, "playlists": scanned}
+    return scanned
+
+
+def _find_playlist(playlists: list[dict[str, Any]], query: str) -> dict[str, Any] | None:
+    needle = _norm_name(query)
+    if not needle:
+        return None
+    exact = [p for p in playlists if _norm_name(p["name"]) == needle]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        editable = [p for p in exact if p.get("can_add")]
+        return editable[0] if editable else exact[0]
+    starts = [p for p in playlists if _norm_name(p["name"]).startswith(needle)]
+    if len(starts) == 1:
+        return starts[0]
+    contains = [p for p in playlists if needle in _norm_name(p["name"])]
+    if not contains:
+        return None
+    contains.sort(key=lambda p: abs(len(_norm_name(p["name"])) - len(needle)))
+    return contains[0]
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Set up LaunchPad music playlist services."""
+    hass.data.setdefault(DOMAIN, {})
+
+    async def handle_get_current_track(call: ServiceCall) -> dict[str, Any]:
+        entity_id = call.data.get("entity_id") or DEFAULT_PLAYER
+        track = await _get_current_track(hass, entity_id)
+        return {"track": track}
+
+    async def handle_list_playlists(call: ServiceCall) -> dict[str, Any]:
+        playlists = await _list_playlists(hass)
+        playlists.sort(key=lambda p: (p.get("name") or "").casefold())
+        return {"playlists": playlists, "count": len(playlists)}
+
+    async def handle_playlist_picker(call: ServiceCall) -> dict[str, Any]:
+        entity_id = call.data.get("entity_id") or DEFAULT_PLAYER
+        check = call.data.get("check_membership", True)
+        track = await _get_current_track(hass, entity_id)
+        playlists = await _list_playlists(hass)
+        if check:
+            playlists = await _scan_membership(hass, track, playlists)
+        else:
+            for pl in playlists:
+                pl["contains"] = False
+            playlists.sort(key=lambda p: (p.get("name") or "").casefold())
+        return {
+            "track": track,
+            "playlists": playlists,
+            "count": len(playlists),
+            "already_on": [p for p in playlists if p.get("contains")],
+        }
+
+    async def handle_add_to_playlist(call: ServiceCall) -> dict[str, Any]:
+        entity_id = call.data.get("entity_id") or DEFAULT_PLAYER
+        playlist_query = (
+            call.data.get("playlist") or call.data.get("playlist_name") or ""
+        ).strip()
+        playlist_uri = (call.data.get("playlist_uri") or "").strip()
+        track_uri = (call.data.get("track_uri") or "").strip()
+
+        if track_uri:
+            track = {
+                "uri": track_uri,
+                "name": call.data.get("track_name") or "Track",
+                "artist": call.data.get("track_artist") or "",
+                "spotify_id": call.data.get("spotify_id"),
+                "player": entity_id,
+            }
+        else:
+            track = await _get_current_track(hass, entity_id)
+
+        playlists = await _list_playlists(hass)
+        target = None
+        if playlist_uri:
+            target = next((p for p in playlists if p["uri"] == playlist_uri), None)
+            if target is None:
+                pid = _playlist_id_from_uri(playlist_uri)
+                if pid:
+                    target = {
+                        "name": call.data.get("playlist_name") or pid,
+                        "uri": playlist_uri,
+                        "id": pid,
+                        "can_add": True,
+                    }
+        elif playlist_query:
+            target = _find_playlist(playlists, playlist_query)
+        else:
+            raise ServiceValidationError("Provide playlist name or playlist_uri.")
+
+        if not target or not target.get("id"):
+            raise ServiceValidationError(
+                f"Could not find a playlist matching '{playlist_query or playlist_uri}'."
+            )
+        if not target.get("can_add", True):
+            raise ServiceValidationError(
+                f"Playlist '{target['name']}' is not a writable playlist target."
+            )
+
+        mass = await _get_mass(hass)
+        match_keys = _track_match_keys(track["uri"], track.get("spotify_id"))
+        already = await _playlist_contains(mass, str(target["id"]), match_keys)
+        if already:
+            return {
+                "status": "already",
+                "message": (
+                    f"{track.get('name') or 'This song'} is already on "
+                    f"{target['name']}. We're all good."
+                ),
+                "track": track,
+                "playlist": target,
+                "added": False,
+            }
+
+        try:
+            await mass.music.add_playlist_tracks(target["id"], [track["uri"]])
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.exception("Failed adding track to playlist")
+            raise HomeAssistantError(
+                f"Could not add track to {target['name']}: {err}"
+            ) from err
+
+        cache = hass.data.get(DOMAIN, {}).get("membership_cache", {})
+        cache.pop(track["uri"], None)
+
+        return {
+            "status": "added",
+            "message": (
+                f"Added {track.get('name') or 'the track'}"
+                + (f" by {track['artist']}" if track.get("artist") else "")
+                + f" to {target['name']}."
+            ),
+            "track": track,
+            "playlist": target,
+            "added": True,
+        }
+
+    hass.services.async_register(
+        DOMAIN,
+        "get_current_track",
+        handle_get_current_track,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "list_playlists",
+        handle_list_playlists,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "playlist_picker",
+        handle_playlist_picker,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "add_to_playlist",
+        handle_add_to_playlist,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    _LOGGER.info("LaunchPad music playlist services registered")
+    return True

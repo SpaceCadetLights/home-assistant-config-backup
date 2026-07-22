@@ -1,0 +1,10 @@
+{
+  "domain": "launchpad_music",
+  "name": "LaunchPad Music Playlists",
+  "documentation": "https://github.com/spacecadets/launchpad",
+  "codeowners": [],
+  "after_dependencies": ["music_assistant"],
+  "requirements": [],
+  "iot_class": "local_polling",
+  "version": "1.0.0"
+}

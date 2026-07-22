@@ -1,0 +1,15 @@
+# Add currently playing track to a named Music Assistant / Spotify playlist.
+language: "en"
+lists:
+  playlist:
+    wildcard: true
+intents:
+  AddCurrentToPlaylist:
+    data:
+      - sentences:
+          - "add (this|the|that) (song|track|one|tune) to [my|the] {playlist} playlist"
+          - "add (this|the|that) to [my|the] {playlist} playlist"
+          - "save (this|the|that) (song|track|one|tune) to [my|the] {playlist} playlist"
+          - "put (this|the|that) (song|track|one|tune) on [my|the] {playlist} playlist"
+          - "add (this|the|that) (song|track) onto [my|the] {playlist} playlist"
+          - "add this to {playlist}"

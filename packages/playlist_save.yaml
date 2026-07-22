@@ -1,0 +1,57 @@
+# Package: playlist_save
+# Add currently-playing Music Assistant track to a Spotify/MA playlist.
+# Voice: custom_sentences/en/playlist_save.yaml → AddCurrentToPlaylist
+#        + Assist-exposed script.add_current_to_playlist (MONA Fast LLM).
+# UI: Space Cadets calls launchpad_music.playlist_picker / add_to_playlist.
+
+input_text:
+  playlist_save_last:
+    name: Playlist Save Last Message
+    max: 255
+    initial: ""
+
+script:
+  add_current_to_playlist:
+    alias: Add Current Song to Playlist
+    description: >-
+      Add whatever is currently playing on Full Studio to a Spotify/Music Assistant
+      playlist by name (for example "2026"). If the song is already on that playlist,
+      say so instead of adding a duplicate. Use this for "add this to my … playlist".
+    fields:
+      playlist:
+        description: Playlist name to add the current song to
+        example: "2026"
+        required: true
+        selector:
+          text:
+    mode: queued
+    max: 5
+    sequence:
+      - variables:
+          pl: "{{ playlist | default('', true) | string | trim }}"
+      - condition: template
+        value_template: "{{ pl not in ['', 'unknown', 'unavailable', 'none'] }}"
+      - action: launchpad_music.add_to_playlist
+        data:
+          playlist: "{{ pl }}"
+          entity_id: media_player.full_studio
+        response_variable: add_result
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.playlist_save_last
+        data:
+          value: "{{ add_result.message | default('Done.') | truncate(255, true, '') }}"
+      - stop: "{{ add_result.message | default('Done.') }}"
+
+intent_script:
+  AddCurrentToPlaylist:
+    description: Add the currently playing song to a named playlist
+    action:
+      - action: script.add_current_to_playlist
+        data:
+          playlist: "{{ playlist | string }}"
+    speech:
+      text: >-
+        {{ states('input_text.playlist_save_last')
+           if states('input_text.playlist_save_last') not in ['', 'unknown', 'unavailable']
+           else 'Okay, adding that to ' ~ (playlist | string) ~ '.' }}

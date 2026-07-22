@@ -12,6 +12,9 @@ scene: !include scenes.yaml
 homeassistant:
   packages: !include_dir_named packages
 
+# LaunchPad Music Assistant playlist helpers (add-to-playlist voice + UI)
+launchpad_music:
+
 # Added By Homeway to enable Alexa support.
 alexa:
   smart_home:
