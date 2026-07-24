@@ -265,6 +265,30 @@ async def _index_add_track_to_playlist(
         await _save_track_index(hass, index)
 
 
+async def _index_remove_track_from_playlist(
+    hass: HomeAssistant,
+    track: dict[str, Any],
+    playlist_uri: str,
+) -> None:
+    if not playlist_uri:
+        return
+    index = await _load_track_index(hass)
+    mapping: dict[str, list[str]] = dict(index.get("track_to_playlists") or {})
+    keys = _track_match_keys(track.get("uri") or "", track.get("spotify_id"))
+    changed = False
+    for key in keys:
+        cur = [u for u in (mapping.get(key) or []) if u != playlist_uri]
+        if cur != list(mapping.get(key) or []):
+            if cur:
+                mapping[key] = cur
+            else:
+                mapping.pop(key, None)
+            changed = True
+    if changed:
+        index["track_to_playlists"] = mapping
+        await _save_track_index(hass, index)
+
+
 async def _index_merge_scan(
     hass: HomeAssistant,
     track: dict[str, Any],
@@ -291,6 +315,119 @@ async def _get_mass(hass: HomeAssistant):
     from homeassistant.components.music_assistant.helpers import get_music_assistant_client
 
     return get_music_assistant_client(hass, MASS_ENTRY_ID)
+
+
+async def _sync_playlists_from_providers(hass: HomeAssistant) -> None:
+    """Ask Music Assistant to pull playlist changes from Spotify (and others).
+
+    Spotify does not push webhooks into MA — HA→Spotify is immediate on add/remove,
+    but Spotify→HA only updates when MA syncs / force-refreshes. Triggering sync when
+    the Save picker opens is the closest we get to “immediate” the other direction.
+    """
+    state = hass.data.setdefault(DOMAIN, {})
+    if state.get("playlist_syncing"):
+        return
+    now = time.time()
+    last = float(state.get("playlist_sync_at") or 0)
+    if now - last < 20:
+        return
+    state["playlist_syncing"] = True
+    state["playlist_sync_at"] = now
+    try:
+        mass = await _get_mass(hass)
+        music = mass.music
+        synced = False
+        for meth_name, kwargs in (
+            ("sync", {"media_types": ["playlist"]}),
+            ("start_sync", {"media_types": ["playlist"]}),
+            ("sync", {}),
+            ("start_sync", {}),
+        ):
+            meth = getattr(music, meth_name, None)
+            if not callable(meth):
+                continue
+            try:
+                result = meth(**kwargs)
+                if asyncio.iscoroutine(result):
+                    await result
+                synced = True
+                break
+            except TypeError:
+                try:
+                    result = meth()
+                    if asyncio.iscoroutine(result):
+                        await result
+                    synced = True
+                    break
+                except Exception:  # noqa: BLE001
+                    continue
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("MA %s failed: %s", meth_name, err)
+        if synced:
+            _LOGGER.info("LaunchPad triggered Music Assistant playlist sync")
+        else:
+            _LOGGER.debug("LaunchPad could not find a MA playlist sync method")
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("LaunchPad playlist sync failed")
+    finally:
+        state["playlist_syncing"] = False
+
+
+def _schedule_playlist_sync(hass: HomeAssistant) -> None:
+    hass.async_create_task(_sync_playlists_from_providers(hass))
+
+
+def _spotify_provider_ref(mass: Any) -> str:
+    """Best-effort Spotify provider instance/domain for create_playlist."""
+    providers = []
+    for attr in ("providers", "get_library_providers"):
+        obj = getattr(mass.music, attr, None)
+        if callable(obj):
+            try:
+                obj = obj()
+            except Exception:  # noqa: BLE001
+                obj = None
+        if obj:
+            providers = list(obj)
+            break
+    if not providers:
+        providers = list(getattr(mass, "music_providers", None) or [])
+    for prov in providers:
+        domain = str(
+            getattr(prov, "domain", None)
+            or getattr(prov, "lookup_key", None)
+            or ""
+        ).lower()
+        instance = str(getattr(prov, "instance_id", None) or "")
+        if "spotify" in domain or instance.startswith("spotify"):
+            return instance or domain or "spotify"
+    return "spotify"
+
+
+async def _track_positions_in_playlist(
+    mass: Any,
+    playlist_id: str,
+    match_keys: set[str],
+    *,
+    force_refresh: bool = True,
+) -> list[int]:
+    """Return playlist positions for a track (required by MA remove_playlist_tracks)."""
+    positions: list[int] = []
+    fallback = 0
+    async for track in _iter_playlist_tracks(
+        mass, playlist_id, force_refresh=force_refresh
+    ):
+        if _item_uris(track) & match_keys:
+            if isinstance(track, dict):
+                pos = track.get("position")
+            else:
+                pos = getattr(track, "position", None)
+            try:
+                positions.append(int(pos) if pos is not None else fallback)
+            except (TypeError, ValueError):
+                positions.append(fallback)
+        fallback += 1
+    return positions
 
 
 async def _get_current_track(hass: HomeAssistant, entity_id: str) -> dict[str, Any]:
@@ -482,13 +619,22 @@ async def _scan_membership(
         if not pid or not uri:
             return uri, False
         async with sem:
+            # Recent playlists: force_refresh so Spotify→MA edits show up quickly.
+            freshen = bool(pl.get("_force_refresh"))
             hit = await _playlist_contains(
-                mass, str(pid), match_keys, force_refresh=False
+                mass, str(pid), match_keys, force_refresh=freshen
             )
         return uri, hit
 
     batch_size = 12
     hits = 0
+    for i, pl in enumerate(ordered):
+        # First ~24 (most recently edited) get a live Spotify refresh.
+        if i < 24:
+            pl = dict(pl)
+            pl["_force_refresh"] = True
+            ordered[i] = pl
+
     for i in range(0, len(ordered), batch_size):
         batch = ordered[i : i + batch_size]
         results = await asyncio.gather(*[_one(pl) for pl in batch])
@@ -648,6 +794,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def handle_playlist_picker(call: ServiceCall) -> dict[str, Any]:
         entity_id = call.data.get("entity_id") or DEFAULT_PLAYER
         check = call.data.get("check_membership", True)
+        # Pull Spotify→MA playlist changes (no webhooks; this is a sync kick).
+        _schedule_playlist_sync(hass)
         track = await _get_current_track(hass, entity_id)
         playlists = await _list_playlists(hass)
         edits = await _load_playlist_edits(hass)
@@ -675,6 +823,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             "membership_source": "index",
             "membership_hits": len(already),
             "index_warm": warm,
+            "sync_kicked": True,
         }
 
     async def handle_add_to_playlist(call: ServiceCall) -> dict[str, Any]:
@@ -787,6 +936,184 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             "added": True,
         }
 
+    async def handle_remove_from_playlist(call: ServiceCall) -> dict[str, Any]:
+        entity_id = call.data.get("entity_id") or DEFAULT_PLAYER
+        playlist_uri = str(call.data.get("playlist_uri") or "").strip()
+        playlist_query = str(
+            call.data.get("playlist") or call.data.get("playlist_name") or ""
+        ).strip()
+        track_uri = str(call.data.get("track_uri") or "").strip()
+
+        if track_uri:
+            track = {
+                "uri": track_uri,
+                "name": call.data.get("track_name") or "Track",
+                "artist": call.data.get("track_artist") or "",
+                "spotify_id": call.data.get("spotify_id"),
+                "player": entity_id,
+            }
+        else:
+            track = await _get_current_track(hass, entity_id)
+
+        playlists = await _list_playlists(hass)
+        target = None
+        if playlist_uri:
+            target = next((p for p in playlists if p["uri"] == playlist_uri), None)
+            if target is None:
+                pid = _playlist_id_from_uri(playlist_uri)
+                if pid:
+                    target = {
+                        "name": call.data.get("playlist_name") or pid,
+                        "uri": playlist_uri,
+                        "id": pid,
+                        "can_add": True,
+                    }
+        elif playlist_query:
+            target = _find_playlist(playlists, playlist_query)
+        else:
+            raise ServiceValidationError("Provide playlist name or playlist_uri.")
+
+        if not target or not target.get("id"):
+            raise ServiceValidationError(
+                f"Could not find a playlist matching '{playlist_query or playlist_uri}'."
+            )
+        if not target.get("can_add", True):
+            raise ServiceValidationError(
+                f"Playlist '{target['name']}' is not a writable playlist target."
+            )
+
+        mass = await _get_mass(hass)
+        match_keys = _track_match_keys(track["uri"], track.get("spotify_id"))
+        positions = await _track_positions_in_playlist(
+            mass, str(target["id"]), match_keys, force_refresh=True
+        )
+        if not positions:
+            await _index_remove_track_from_playlist(hass, track, target["uri"])
+            ts = await _touch_playlist(hass, target["uri"])
+            target = dict(target)
+            target["last_edited"] = ts
+            target["contains"] = False
+            return {
+                "status": "absent",
+                "message": (
+                    f"{track.get('name') or 'This song'} is not on {target['name']}."
+                ),
+                "track": track,
+                "playlist": target,
+                "removed": False,
+            }
+
+        try:
+            await mass.music.remove_playlist_tracks(
+                target["id"], tuple(sorted(set(positions)))
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.exception("Failed removing track from playlist")
+            raise HomeAssistantError(
+                f"Could not remove track from {target['name']}: {err}"
+            ) from err
+
+        cache = hass.data.get(DOMAIN, {}).get("membership_cache", {})
+        cache.pop(track["uri"], None)
+        await _index_remove_track_from_playlist(hass, track, target["uri"])
+        ts = await _touch_playlist(hass, target["uri"])
+        target = dict(target)
+        target["last_edited"] = ts
+        target["contains"] = False
+        return {
+            "status": "removed",
+            "message": (
+                f"Removed {track.get('name') or 'the track'} from {target['name']}."
+            ),
+            "track": track,
+            "playlist": target,
+            "removed": True,
+        }
+
+    async def handle_create_playlist(call: ServiceCall) -> dict[str, Any]:
+        name = str(call.data.get("name") or call.data.get("playlist") or "").strip()
+        if not name:
+            raise ServiceValidationError("Provide a playlist name.")
+        entity_id = call.data.get("entity_id") or DEFAULT_PLAYER
+        add_current = bool(call.data.get("add_current", True))
+        provider = str(call.data.get("provider") or "").strip() or None
+
+        mass = await _get_mass(hass)
+        if not provider:
+            provider = _spotify_provider_ref(mass)
+
+        playlist_obj = None
+        last_err: Exception | None = None
+        for prov in (provider, "spotify", "builtin", None):
+            try:
+                if prov:
+                    playlist_obj = await mass.music.create_playlist(
+                        name, provider_instance_or_domain=prov
+                    )
+                else:
+                    playlist_obj = await mass.music.create_playlist(name)
+                break
+            except Exception as err:  # noqa: BLE001
+                last_err = err
+                _LOGGER.debug("create_playlist via %s failed: %s", prov, err)
+                playlist_obj = None
+
+        if playlist_obj is None:
+            raise HomeAssistantError(
+                f"Could not create playlist '{name}': {last_err}"
+            )
+
+        if isinstance(playlist_obj, dict):
+            pl_name = playlist_obj.get("name") or name
+            pl_uri = playlist_obj.get("uri") or ""
+            pl_id = _playlist_id_from_uri(pl_uri) or str(
+                playlist_obj.get("item_id") or playlist_obj.get("id") or ""
+            )
+            pl_image = playlist_obj.get("image")
+        else:
+            pl_name = getattr(playlist_obj, "name", None) or name
+            pl_uri = str(getattr(playlist_obj, "uri", "") or "")
+            pl_id = _playlist_id_from_uri(pl_uri) or str(
+                getattr(playlist_obj, "item_id", "") or ""
+            )
+            pl_image = None
+
+        target = {
+            "name": pl_name,
+            "uri": pl_uri,
+            "id": pl_id,
+            "image": pl_image,
+            "can_add": True,
+            "contains": False,
+            "last_edited": 0.0,
+        }
+        ts = await _touch_playlist(hass, pl_uri) if pl_uri else time.time()
+        target["last_edited"] = ts
+
+        track = None
+        added = False
+        if add_current and pl_id:
+            try:
+                track = await _get_current_track(hass, entity_id)
+                await mass.music.add_playlist_tracks(pl_id, [track["uri"]])
+                await _index_add_track_to_playlist(hass, track, pl_uri)
+                target["contains"] = True
+                added = True
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("Created playlist but could not add current track: %s", err)
+
+        return {
+            "status": "created",
+            "message": (
+                f"Created playlist {pl_name}"
+                + (f" and added {track.get('name')}" if added and track else "")
+                + "."
+            ),
+            "playlist": target,
+            "track": track,
+            "added": added,
+        }
+
     hass.services.async_register(
         DOMAIN,
         "get_current_track",
@@ -809,6 +1136,18 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         DOMAIN,
         "add_to_playlist",
         handle_add_to_playlist,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "remove_from_playlist",
+        handle_remove_from_playlist,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "create_playlist",
+        handle_create_playlist,
         supports_response=SupportsResponse.OPTIONAL,
     )
 

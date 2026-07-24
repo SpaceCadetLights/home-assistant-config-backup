@@ -175,10 +175,9 @@
       graph_id: 463eaf2e-9150-48f8-980c-ba2a8a95bb00
       graph_version: 1
 - id: '1780775906154'
-  alias: Pause Spotify with double click
-  description: DISABLED — Entry Button now toggles studio + Full Studio music on short
-    press.
-  enabled: false
+  alias: Entry Button — Outside Lights Toggle
+  description: Double press on the Entry Button toggles light.outside_lights (Patio
+    outdoor string lights + future outdoor members).
   triggers:
   - device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
     domain: zha
@@ -187,9 +186,7 @@
     trigger: device
   conditions: []
   actions:
-  - action: media_player.media_play_pause
-    metadata: {}
+  - action: light.toggle
     target:
-      entity_id: media_player.spotify_etcetre
-    data: {}
+      entity_id: light.outside_lights
   mode: single

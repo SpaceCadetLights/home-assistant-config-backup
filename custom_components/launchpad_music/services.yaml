@@ -16,7 +16,7 @@ list_playlists:
 
 playlist_picker:
   name: Playlist picker for current track
-  description: Current track plus playlists, with contains=true when the track is already on that playlist.
+  description: Current track plus playlists, with contains=true when the track is already on that playlist. Kicks a Music Assistant playlist sync so Spotify→HA catches up.
   fields:
     entity_id:
       name: Player
@@ -56,3 +56,53 @@ add_to_playlist:
       name: Track URI override
       selector:
         text:
+
+remove_from_playlist:
+  name: Remove current track from playlist
+  description: Remove the currently playing track from a playlist (toggle undo). Syncs to Spotify when the playlist is Spotify-backed.
+  fields:
+    playlist:
+      name: Playlist name
+      selector:
+        text:
+    playlist_uri:
+      name: Playlist URI
+      example: library://playlist/608
+      selector:
+        text:
+    entity_id:
+      name: Player
+      example: media_player.full_studio
+      selector:
+        entity:
+          domain: media_player
+    track_uri:
+      name: Track URI override
+      selector:
+        text:
+
+create_playlist:
+  name: Create playlist
+  description: Create a new playlist (prefers Spotify) and optionally add the current track.
+  fields:
+    name:
+      name: Playlist name
+      required: true
+      selector:
+        text:
+    add_current:
+      name: Add current track
+      default: true
+      selector:
+        boolean:
+    provider:
+      name: Provider
+      description: Optional MA provider instance/domain (default Spotify).
+      selector:
+        text:
+    entity_id:
+      name: Player
+      example: media_player.full_studio
+      selector:
+        entity:
+          domain: media_player

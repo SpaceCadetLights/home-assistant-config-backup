@@ -30,6 +30,13 @@ light:
       - light.paint_booth_light
 
   - platform: group
+    name: Outside Lights
+    unique_id: studio_group_outside_lights
+    entities:
+      # Patio string lights — add more outdoor lights here for Entry Button double-press
+      - light.outdoor_white_lights
+
+  - platform: group
     name: Studio Lights
     unique_id: studio_group_studio_lights
     entities:
