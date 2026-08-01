@@ -112,14 +112,14 @@
   mode: single
 - id: '1780413904326'
   alias: Blinds follow the sun
-  description: ''
+  description: Open ~1 min before sunrise; close 20 min after sunset.
   triggers:
   - trigger: sun
     event: sunrise
     offset: '-60'
   - trigger: sun
     event: sunset
-    offset: '+60'
+    offset: +00:20:00
   conditions: []
   actions:
   - variables:
