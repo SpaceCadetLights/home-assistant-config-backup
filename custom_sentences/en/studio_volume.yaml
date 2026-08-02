@@ -1,0 +1,38 @@
+# Bare volume commands → Full Studio (default music player).
+# Wins over Assist targeting the Voice PE media player.
+language: "en"
+lists:
+  volume:
+    range:
+      from: 0
+      to: 100
+intents:
+  SetStudioVolume:
+    data:
+      - sentences:
+          - "(set|change) [the] volume to {volume}[([ ]%)| percent]"
+          - "(set|change) volume to {volume}[([ ]%)| percent]"
+          - "volume [to] {volume}[([ ]%)| percent]"
+          - "(set|change) [the] (music|studio|full studio) volume to {volume}[([ ]%)| percent]"
+          - "(set|change) [the] volume (on|of|for) [the] (music|studio|full studio) to {volume}[([ ]%)| percent]"
+          - "make [the] (music|studio|volume) {volume}[([ ]%)| percent]"
+  StudioVolumeUp:
+    data:
+      - sentences:
+          - "[turn] [the] volume up"
+          - "volume up"
+          - "[turn] it up"
+          - "louder"
+          - "make it louder"
+          - "turn [the] (music|studio) up"
+  StudioVolumeDown:
+    data:
+      - sentences:
+          - "[turn] [the] volume down"
+          - "volume down"
+          - "[turn] it down"
+          - "quieter"
+          - "softer"
+          - "make it quieter"
+          - "make it softer"
+          - "turn [the] (music|studio) down"

@@ -1,7 +1,7 @@
 # Package: studio_music
-# “Play music” on any Assist assistant -> Music Assistant on the Full Studio
-# whole-house sync group. script.play_studio_music is the single place that
-# defines the default target player and the default playlist.
+# “Play music” / volume on any Assist assistant -> Music Assistant on the
+# Full Studio whole-house sync group. script.play_studio_music and
+# script.set_studio_volume are the single places that define the default target.
 
 script:
   play_studio_music:
@@ -41,6 +41,65 @@ script:
             data:
               media_id: "{{ q }}"
 
+  set_studio_volume:
+    alias: Set Studio Volume
+    description: >-
+      Set or nudge the Full Studio Music Assistant group volume. Use this for
+      any request to set, raise, or lower the music / studio volume. Pass volume
+      as 0–100 for an absolute level, or direction as up/down.
+    fields:
+      volume:
+        description: Absolute volume percent 0–100
+        example: 70
+        selector:
+          number:
+            min: 0
+            max: 100
+            step: 1
+            unit_of_measurement: "%"
+      direction:
+        description: Relative change — up or down (ignored when volume is set)
+        example: up
+        selector:
+          select:
+            options:
+              - up
+              - down
+    mode: restart
+    sequence:
+      - variables:
+          target_player: media_player.full_studio
+          vol_raw: "{{ volume | default(none) }}"
+          dir: "{{ direction | default('', true) | string | lower | trim }}"
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ vol_raw is not none and vol_raw | string | lower not in
+                     ['', 'none', 'unknown', 'unavailable']
+                     and (vol_raw is number or vol_raw | string | is_number) }}
+            sequence:
+              - service: media_player.volume_set
+                target:
+                  entity_id: "{{ target_player }}"
+                data:
+                  volume_level: >-
+                    {{ ([0, [1, (vol_raw | float) / 100] | min] | max) | round(3) }}
+          - conditions:
+              - condition: template
+                value_template: "{{ dir in ['up', 'louder', 'higher'] }}"
+            sequence:
+              - service: media_player.volume_up
+                target:
+                  entity_id: "{{ target_player }}"
+          - conditions:
+              - condition: template
+                value_template: "{{ dir in ['down', 'quieter', 'softer', 'lower'] }}"
+            sequence:
+              - service: media_player.volume_down
+                target:
+                  entity_id: "{{ target_player }}"
+
 intent_script:
   PlayStudioMusic:
     speech:
@@ -55,3 +114,30 @@ intent_script:
       - service: script.play_studio_music
         data:
           query: "{{ query | default('', true) }}"
+
+  SetStudioVolume:
+    description: Set Full Studio music volume to a percent
+    action:
+      - service: script.set_studio_volume
+        data:
+          volume: "{{ volume }}"
+    speech:
+      text: "Okay, Full Studio volume set to {{ volume }}."
+
+  StudioVolumeUp:
+    description: Turn Full Studio music volume up
+    action:
+      - service: script.set_studio_volume
+        data:
+          direction: up
+    speech:
+      text: "Okay, turning the music up."
+
+  StudioVolumeDown:
+    description: Turn Full Studio music volume down
+    action:
+      - service: script.set_studio_volume
+        data:
+          direction: down
+    speech:
+      text: "Okay, turning the music down."
