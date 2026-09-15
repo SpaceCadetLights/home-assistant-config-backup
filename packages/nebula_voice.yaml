@@ -1,16 +1,22 @@
 # Package: nebula_voice
-# Voice control for "Nebula" (our WLED lighting). script.nebula_apply is the
-# single source of truth for WHICH devices are driven — add future WLED devices
-# to the lists in the first `variables:` block and every voice command + the
-# GUI intent will drive them together. Trillium also UDP-syncs to other WLED.
+# Voice + GUI control for "Nebula" (branded WLED lighting).
+# Active device is input_text.nebula_target (default light.trillium).
+# Space Cadets Nebula card + Assist both drive that selection.
+
+input_text:
+  nebula_target:
+    name: Nebula Target Light
+    max: 255
+    initial: "light.trillium"
 
 script:
   nebula_apply:
     alias: Nebula Apply
     description: >-
-      Drive all Nebula-capable lighting (WLED). Sets any combination of power,
-      effect, color palette, speed and distortion (intensity). Trillium is the
-      master and syncs to other WLED devices on the network.
+      Drive the currently selected Nebula WLED device (see input_text.nebula_target
+      / Space Cadets Nebula picker). Sets any combination of power, effect, color
+      palette, speed and distortion (intensity). Use this whenever someone asks
+      to control Nebula lighting.
     fields:
       power:
         description: Turn Nebula on or off
@@ -30,16 +36,21 @@ script:
     mode: queued
     max: 10
     sequence:
-      # ---- Nebula device roster (add future WLED devices here) ----
+      # ---- Active Nebula device (Space Cadets picker writes this helper) ----
       - variables:
+          nebula_light: >-
+            {% set t = states('input_text.nebula_target') | default('', true) | string | trim %}
+            {{ t if t.startswith('light.') else 'light.trillium' }}
+      - variables:
+          nebula_base: "{{ nebula_light.split('.')[1] }}"
           nebula_lights:
-            - light.trillium
+            - "{{ nebula_light }}"
           nebula_speed_numbers:
-            - number.trillium_speed
+            - "number.{{ nebula_light.split('.')[1] }}_speed"
           nebula_distort_numbers:
-            - number.trillium_intensity
+            - "number.{{ nebula_light.split('.')[1] }}_intensity"
           nebula_palette_selects:
-            - select.trillium_color_palette
+            - "select.{{ nebula_light.split('.')[1] }}_color_palette"
       # ---- Power ----
       - if: "{{ (power | default('') | string | lower) in ['on','true','1'] }}"
         then:
@@ -51,7 +62,7 @@ script:
           - service: light.turn_off
             target:
               entity_id: "{{ nebula_lights }}"
-      # ---- Effect (fuzzy match against the master's effect_list) ----
+      # ---- Effect (fuzzy match against the active device's effect_list) ----
       - if: "{{ (effect | default('') | string | trim) != '' }}"
         then:
           - variables:
@@ -119,6 +130,15 @@ script:
               value: "{{ distortion | int }}"
 
 intent_script:
+  NebulaPower:
+    description: Turn the selected Nebula WLED device on or off
+    speech:
+      text: >-
+        Nebula {{ 'on' if (power | default('') | string | lower) in ['on','true','1'] else 'off' }}.
+    action:
+      - service: script.nebula_apply
+        data:
+          power: "{{ power }}"
   NebulaEffect:
     speech:
       text: "Nebula effect set to {{ effect }}."

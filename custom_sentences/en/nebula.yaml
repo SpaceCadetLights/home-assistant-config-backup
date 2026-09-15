@@ -1,8 +1,7 @@
 # Space Cadets — Nebula voice control
-# "Nebula" is the branded name for our WLED lighting. For now the master device
-# is Trillium (light.trillium), which UDP-syncs to any other WLED on the LAN.
-# Advanced params (effect / palette / speed / distortion) route through
-# script.nebula_apply so future devices can be added in ONE place.
+# "Nebula" is the branded name for our WLED lighting. The active device is
+# whatever Space Cadets selected (input_text.nebula_target). Power + advanced
+# params route through script.nebula_apply so voice always follows the picker.
 language: "en"
 lists:
   effect:
@@ -18,6 +17,20 @@ lists:
       from: 0
       to: 255
 intents:
+  NebulaPower:
+    data:
+      - sentences:
+          - "(turn|switch|set) [the] nebula [light] on"
+          - "nebula [light] on"
+          - "turn on [the] nebula [light]"
+        slots:
+          power: "on"
+      - sentences:
+          - "(turn|switch|set) [the] nebula [light] off"
+          - "nebula [light] off"
+          - "turn off [the] nebula [light]"
+        slots:
+          power: "off"
   NebulaEffect:
     data:
       - sentences:
