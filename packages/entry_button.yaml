@@ -1,0 +1,103 @@
+# Package: entry_button
+# Front-door Sonoff SNZB-01P (ZHA device_id 04f313ea1a2693cd38586a4d1ba6fbb6)
+# Single = studio lights on/off | Double = outdoor lights | Hold = Full Studio play/pause
+
+script:
+  studio_lights_entry_toggle:
+    alias: Studio Lights Entry Toggle
+    description: Toggle Studio On/Off from the entry button (lights only — no music).
+    icon: mdi:doorbell
+    mode: single
+    sequence:
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: light.studio_lights
+                state: "on"
+            sequence:
+              - action: script.turn_on
+                target:
+                  entity_id: script.studio_all_lights_off
+        default:
+          - action: script.turn_on
+            target:
+              entity_id: script.studio_all_lights_on
+
+  full_studio_play_pause:
+    alias: Full Studio Play/Pause
+    description: >-
+      Play/pause Music Assistant on Full Studio. MA reports pause as idle,
+      so resume when a track is still loaded; otherwise start default music.
+    icon: mdi:play-pause
+    mode: single
+    sequence:
+      - variables:
+          music: "{{ states('media_player.full_studio') }}"
+          content: "{{ state_attr('media_player.full_studio', 'media_content_id') }}"
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ music == 'playing' }}"
+            sequence:
+              - action: media_player.media_pause
+                target:
+                  entity_id: media_player.full_studio
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ music in ['paused', 'idle']
+                     and content not in [none, ''] }}
+            sequence:
+              - action: media_player.media_play
+                target:
+                  entity_id: media_player.full_studio
+        default:
+          - action: script.turn_on
+            target:
+              entity_id: script.play_studio_music
+
+automation:
+  - id: entry_button_studio_toggle_pkg
+    alias: Entry Button — Studio Toggle
+    description: Single (short) press toggles Studio On/Off lights.
+    mode: single
+    triggers:
+      - trigger: device
+        device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
+        domain: zha
+        type: remote_button_short_press
+        subtype: button
+    actions:
+      - action: script.turn_on
+        target:
+          entity_id: script.studio_lights_entry_toggle
+
+  - id: entry_button_outside_lights_toggle_pkg
+    alias: Entry Button — Outside Lights Toggle
+    description: Double press toggles light.outside_lights.
+    mode: single
+    triggers:
+      - trigger: device
+        device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
+        domain: zha
+        type: remote_button_double_press
+        subtype: button
+    actions:
+      - action: light.toggle
+        target:
+          entity_id: light.outside_lights
+
+  - id: entry_button_music_play_pause_pkg
+    alias: Entry Button — Music Play/Pause
+    description: Press-and-hold play/pauses Full Studio (Music Assistant).
+    mode: single
+    triggers:
+      - trigger: device
+        device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
+        domain: zha
+        type: remote_button_long_press
+        subtype: button
+    actions:
+      - action: script.turn_on
+        target:
+          entity_id: script.full_studio_play_pause

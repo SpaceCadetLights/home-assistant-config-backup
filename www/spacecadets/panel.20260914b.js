@@ -3389,7 +3389,7 @@ class SpaceCadetsPanel extends HTMLElement {
         id="sc-trail-frame"
         class="sc-trail-frame"
         title="Crew location trail"
-        src="/local/spacecadets/trail-map.html?v=20260717g"
+        src="/local/spacecadets/trail-map.html?v=20261008a"
         loading="eager"
         referrerpolicy="no-referrer"
       ></iframe>
@@ -3608,7 +3608,7 @@ class SpaceCadetsPanel extends HTMLElement {
             id="sc-trail-frame"
             class="sc-trail-frame"
             title="Crew location trail"
-            src="/local/spacecadets/trail-map.html?v=20260717h"
+            src="/local/spacecadets/trail-map.html?v=20261008a"
             loading="eager"
             referrerpolicy="no-referrer"
           ></iframe>

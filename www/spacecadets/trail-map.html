@@ -56,15 +56,19 @@
         preferCanvas: false,
       });
 
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        minZoom: 2,
-        subdomains: "abcd",
-        tileSize: 256,
-        detectRetina: false,
-        updateWhenZooming: false,
-        keepBuffer: 6,
-      }).addTo(map);
+      // Free Esri dark basemap — no API key required
+      L.tileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+        {
+          maxZoom: 16,
+          minZoom: 2,
+          tileSize: 256,
+          detectRetina: false,
+          updateWhenZooming: false,
+          keepBuffer: 6,
+          attribution: "Esri, HERE, Garmin, FAO, NOAA, USGS",
+        }
+      ).addTo(map);
 
       map.setView([homeDefault.lat, homeDefault.lon], 13);
 

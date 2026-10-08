@@ -1,7 +1,7 @@
 - id: '1755885323435'
   alias: Entry Button — Studio Toggle
-  description: Short press on the Entry Button runs Studio Entry Toggle (lights on/off
-    + pause/resume Full Studio music).
+  description: DISABLED — replaced by packages/entry_button.yaml.
+  enabled: false
   triggers:
   - trigger: device
     device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
@@ -176,8 +176,8 @@
       graph_version: 1
 - id: '1780775906154'
   alias: Entry Button — Outside Lights Toggle
-  description: Double press on the Entry Button toggles light.outside_lights (Patio
-    outdoor string lights + future outdoor members).
+  description: DISABLED — replaced by packages/entry_button.yaml.
+  enabled: false
   triggers:
   - device_id: 04f313ea1a2693cd38586a4d1ba6fbb6
     domain: zha
