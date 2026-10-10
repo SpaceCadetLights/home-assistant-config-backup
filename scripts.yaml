@@ -1,18 +1,30 @@
 studio_all_lights_on:
   alias: Studio On
-  description: Turn on upstairs/studio lights (excludes bathroom mirror + workshop — motion only).
+  description: >-
+    Turn on upstairs/studio lights (excludes bathroom mirror + workshop — motion only).
+    Also turns on the Nebula target from Space Cadets (input_text.nebula_target).
   icon: mdi:lightbulb-group
   mode: single
   sequence:
+    - variables:
+        nebula: "{{ states('input_text.nebula_target') | trim | default('light.trillium', true) }}"
     - action: light.turn_on
       target:
         entity_id:
           - light.build_space_lights
           - light.lounge_lights
-          - light.trillium
           - light.front_right_lamp
           - light.bar_lights
           - light.outdoor_white_lights
+    - if:
+        - condition: template
+          value_template: >-
+            {{ nebula.startswith('light.')
+               and states(nebula) not in ['unknown', 'unavailable', ''] }}
+      then:
+        - action: light.turn_on
+          target:
+            entity_id: "{{ nebula }}"
     - action: switch.turn_on
       target:
         entity_id:
@@ -26,20 +38,32 @@ studio_all_lights_on:
 
 studio_all_lights_off:
   alias: Studio Off
-  description: Turn off all studio lights including workshop; bathroom mirror stays motion-only.
+  description: >-
+    Turn off all studio lights including workshop; bathroom mirror stays motion-only.
+    Also turns off the Nebula target from Space Cadets (input_text.nebula_target).
   icon: mdi:lightbulb-group-off
   mode: single
   sequence:
+    - variables:
+        nebula: "{{ states('input_text.nebula_target') | trim | default('light.trillium', true) }}"
     - action: light.turn_off
       target:
         entity_id:
           - light.build_space_lights
           - light.lounge_lights
           - light.workshop_lights
-          - light.trillium
           - light.front_right_lamp
           - light.bar_lights
           - light.outdoor_white_lights
+    - if:
+        - condition: template
+          value_template: >-
+            {{ nebula.startswith('light.')
+               and states(nebula) not in ['unknown', 'unavailable', ''] }}
+      then:
+        - action: light.turn_off
+          target:
+            entity_id: "{{ nebula }}"
     - action: switch.turn_off
       target:
         entity_id:
