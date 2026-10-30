@@ -34,6 +34,7 @@ class SpaceCadetsPanel extends HTMLElement {
     this._musicSearchLoading = false;
     this._musicSearchError = null;
     this._massEntryId = "01K50H4V9P53VZ36HSWHBZ13WP";
+    this._volMembersExpanded = false;
   }
 
   _loadMusicMode() {
@@ -327,6 +328,8 @@ class SpaceCadetsPanel extends HTMLElement {
       vol: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5v5h3.2L12 18.5v-13L7.2 9.5z" fill="currentColor" stroke="none"/><path d="M16 8.6a5 5 0 0 1 0 6.8M18.4 6a8.5 8.5 0 0 1 0 12"/></svg>',
       mute: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5v5h3.2L12 18.5v-13L7.2 9.5z" fill="currentColor" stroke="none"/><path d="M16.5 9.5l5 5M21.5 9.5l-5 5"/></svg>',
       expand: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>',
+      chevDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
+      chevUp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>',
       back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
       close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>',
       search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
@@ -347,6 +350,86 @@ class SpaceCadetsPanel extends HTMLElement {
       send: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.4 20.5l17.5-8.4a.7.7 0 0 0 0-1.27L3.4 2.4a.7.7 0 0 0-.98.83L4.7 10.2 14 12l-9.3 1.8-2.28 7a.7.7 0 0 0 .98.83z"/></svg>',
     };
     return I[name] || "";
+  }
+
+  _playingVolumeMembers(groupEntityId) {
+    const id = groupEntityId || this._studioPlayer;
+    const raw = this._attr(id, "group_members");
+    if (!Array.isArray(raw) || !raw.length) return [];
+    return raw.filter((mid) => {
+      const st = this._state(mid);
+      return st === "playing" || st === "paused";
+    });
+  }
+
+  _volumeControlsHtml(info, { hero = false, compact = false } = {}) {
+    const mainId = info.id || this._studioPlayer;
+    const main = this._mediaInfo(mainId);
+    const members = this._playingVolumeMembers(mainId);
+    if (!members.length) this._volMembersExpanded = false;
+    const open = !!this._volMembersExpanded && members.length > 0;
+    const canExpand = members.length > 0;
+    const label = hero || compact ? "VOL" : this._ic("vol");
+
+    // Always render member rows when available so open/close can animate via CSS.
+    const memberRows = canExpand
+      ? members
+          .map((mid) => {
+            const mi = this._mediaInfo(mid);
+            const pct = mi.volPct;
+            return `<div class="sc-vol-member">
+              <div class="sc-vol-member-head">
+                <span class="sc-vol-member-name" title="${this._esc(mi.id || "")}">${this._esc(mi.name || mid)}</span>
+                <em>${pct != null ? pct + "%" : "—"}</em>
+              </div>
+              <div class="sc-vol sc-vol-member-row ${hero ? "sc-hero-vol" : ""}">
+                <input type="range" class="sc-slider" min="0" max="100" step="1" value="${pct ?? 0}" data-act="volume" data-entity="${mid}" ${pct == null ? "disabled" : ""}>
+              </div>
+            </div>`;
+          })
+          .join("")
+      : "";
+
+    return `
+        <div class="sc-vol-wrap ${open ? "open" : ""} ${hero ? "sc-hero-vol-wrap" : ""}">
+          <div class="sc-vol ${hero ? "sc-hero-vol" : ""}">
+            <span>${label}</span>
+            <input type="range" class="sc-slider" min="0" max="100" step="1" value="${main.volPct ?? 0}" data-act="volume" data-entity="${mainId}" ${main.volPct == null ? "disabled" : ""}>
+            <em>${main.volPct != null ? main.volPct + "%" : "—"}</em>
+            ${
+              canExpand
+                ? `<button type="button" class="sc-vol-expand ${open ? "open" : ""}" data-act="vol-members-toggle" title="${open ? "Hide speaker volumes" : "Per-speaker volume"}" aria-expanded="${open}" aria-label="Per-speaker volume">${this._ic(open ? "chevUp" : "chevDown")}</button>`
+                : ""
+            }
+          </div>
+          ${
+            canExpand
+              ? `<div class="sc-vol-members-slot" aria-hidden="${open ? "false" : "true"}">
+                   <div class="sc-vol-members-inner">
+                     <div class="sc-vol-members">${memberRows}</div>
+                   </div>
+                 </div>`
+              : ""
+          }
+        </div>`;
+  }
+
+  _syncVolMembersUi() {
+    const open = !!this._volMembersExpanded;
+    this.querySelectorAll(".sc-vol-wrap").forEach((wrap) => {
+      wrap.classList.toggle("open", open);
+      const slot = wrap.querySelector(".sc-vol-members-slot");
+      if (slot) slot.setAttribute("aria-hidden", open ? "false" : "true");
+      const btn = wrap.querySelector(".sc-vol-expand");
+      if (!btn) return;
+      btn.classList.toggle("open", open);
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      btn.title = open ? "Hide speaker volumes" : "Per-speaker volume";
+      btn.innerHTML = this._ic(open ? "chevUp" : "chevDown");
+    });
+    this.querySelectorAll(".sc-col.hero, .sc-player").forEach((el) => {
+      el.classList.toggle("vol-open", open);
+    });
   }
 
   _transportHtml(info) {
@@ -991,7 +1074,7 @@ class SpaceCadetsPanel extends HTMLElement {
         <div class="sc-mx-title" title="${this._esc(info.title || "")}">${info.title || "Nothing playing"}</div>
         <div class="sc-mx-sub">${this._esc(sub)}</div>
         <div class="sc-transport big-row sc-mx-transport">${this._transportHtml(info)}</div>
-        <div class="sc-vol"><span>${this._ic("vol")}</span><input type="range" class="sc-slider" min="0" max="100" step="1" value="${info.volPct ?? 0}" data-act="volume" data-entity="${info.id || ""}" ${info.volPct == null ? "disabled" : ""}><em>${info.volPct != null ? info.volPct + "%" : "—"}</em></div>
+        ${this._volumeControlsHtml(info)}
         ${progress != null ? `<div class="sc-progress"><div class="sc-progress-bar" style="width:${progress}%"></div><div class="sc-progress-times"><span>${this._fmtTime(info.pos)}</span><span>${this._fmtTime(info.dur)}</span></div></div>` : ""}
         <div class="sc-mx-target">PLAYING TO · <strong>${this._esc(this._name(target) || "—")}</strong></div>
       </div>`;
@@ -1104,7 +1187,7 @@ class SpaceCadetsPanel extends HTMLElement {
         : null;
     const subBits = [info.artist, info.album, info.app, info.source].filter(Boolean);
     return `
-      <div class="sc-player ${compact ? "compact" : ""} ${info.playing ? "live" : ""}" data-act="expand-player" role="button" tabindex="0" title="Tap to open full player">
+      <div class="sc-player ${compact ? "compact" : ""} ${info.playing ? "live" : ""} ${this._volMembersExpanded ? "vol-open" : ""}" data-act="expand-player" role="button" tabindex="0" title="Tap to open full player">
         <button class="sc-player-expand" data-act="expand-player" title="Open full player" aria-label="Expand player">${this._ic("expand")}</button>
         <div class="sc-player-art" style="${info.art ? `background-image:url('${info.art}')` : ""}">
           ${info.art ? "" : "♫"}
@@ -1120,11 +1203,7 @@ class SpaceCadetsPanel extends HTMLElement {
           <div class="sc-transport big-row">${this._transportHtml(info)}
           </div>
 
-          <div class="sc-vol">
-            <span>VOL</span>
-            <input type="range" class="sc-slider" min="0" max="100" step="1" value="${info.volPct ?? 0}" data-act="volume" data-entity="${info.id || ""}" ${info.volPct == null ? "disabled" : ""}>
-            <em>${info.volPct != null ? info.volPct + "%" : "—"}</em>
-          </div>
+          ${this._volumeControlsHtml(info, { compact: true })}
 
           ${
             progress != null
@@ -1475,7 +1554,7 @@ class SpaceCadetsPanel extends HTMLElement {
 
       ${this._htmlReminders()}
 
-      <div class="sc-col hero glass ${info.playing ? "live" : ""}">
+      <div class="sc-col hero glass ${info.playing ? "live" : ""} ${this._volMembersExpanded ? "vol-open" : ""}">
         <div class="sc-hero-bg ${info.art ? "has-art" : "galaxy"}" style="${info.art ? `background-image:url('${info.art}')` : ""}"></div>
         <div class="sc-hero-overlay sc-hero-player">
           <div class="sc-hero-top">
@@ -1492,11 +1571,7 @@ class SpaceCadetsPanel extends HTMLElement {
           <div class="sc-hero-controls">
             <div class="sc-transport big-row">${this._transportHtml(info)}
             </div>
-            <div class="sc-vol sc-hero-vol">
-              <span>VOL</span>
-              <input type="range" class="sc-slider" min="0" max="100" step="1" value="${info.volPct ?? 0}" data-act="volume" data-entity="${info.id || ""}" ${info.volPct == null ? "disabled" : ""}>
-              <em>${info.volPct != null ? info.volPct + "%" : "—"}</em>
-            </div>
+            ${this._volumeControlsHtml(info, { hero: true })}
           </div>
         </div>
       </div>
@@ -3816,8 +3891,14 @@ class SpaceCadetsPanel extends HTMLElement {
         if (act === "pick-nebula-device") { this._openNebulaDevicePicker(); return; }
         if (act === "open-playlist") { ev.stopPropagation(); this._openPlaylistModal(); return; }
         if (act === "open-music-search") { ev.stopPropagation(); this._openMusicSearch(); return; }
+        if (act === "vol-members-toggle") {
+          ev.stopPropagation();
+          this._volMembersExpanded = !this._volMembersExpanded;
+          this._syncVolMembersUi();
+          return;
+        }
         if (act === "expand-player") {
-          const hit = ev.target.closest("button, input, select, a, .sc-transport, .sc-vol, .sc-progress");
+          const hit = ev.target.closest("button, input, select, a, .sc-transport, .sc-vol, .sc-vol-wrap, .sc-progress");
           if (hit && hit !== el) return;
           this._openMediaExpand(el);
           return;
@@ -3994,6 +4075,22 @@ SpaceCadetsPanel.styles = `
   position: relative;
   overflow: hidden;
   padding: 0;
+  transition: max-height 0.34s ease;
+}
+.sc-col.hero.vol-open {
+  max-height: none;
+  /* Keep overflow hidden so glass border-radius still clips art/overlay */
+  overflow: hidden;
+  border-radius: 22px;
+}
+.sc-col.hero.vol-open .sc-hero-overlay {
+  position: relative;
+  inset: auto;
+  min-height: 340px;
+  border-radius: inherit;
+}
+.sc-col.hero.vol-open .sc-hero-bg {
+  border-radius: inherit;
 }
 .sc-col.hero.live { box-shadow: 0 0 0 1px rgba(74,222,128,0.35), 0 0 40px rgba(74,222,128,0.18), 0 20px 50px rgba(0,0,0,0.45); }
 .sc-row.quick { grid-column: 1 / -1; }
@@ -4100,7 +4197,6 @@ SpaceCadetsPanel.styles = `
 }
 .sc-col.hero.live .sc-hero-state { color: #86efac; border-color: rgba(74,222,128,0.5); background: rgba(20,83,45,0.35); }
 .sc-hero-controls { display: flex; flex-direction: column; gap: 12px; }
-.sc-hero-vol { margin-top: 0; max-width: 420px; }
 .sc-hero-vol .sc-slider { background: linear-gradient(90deg, rgba(168,85,247,0.85), rgba(56,189,248,0.9)); }
 .sc-hero .sc-transport button {
   background: rgba(12,6,28,0.55); backdrop-filter: blur(8px);
@@ -4191,8 +4287,51 @@ SpaceCadetsPanel.styles = `
 .sc-player-artist { color: #c4b5fd; margin-bottom: 14px; }
 .sc-transport.big-row button { width: 44px; height: 44px; font-size: 16px; }
 .sc-transport.big-row .big { width: 54px; height: 54px; font-size: 20px; }
-.sc-vol { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
-.sc-vol span { font-size: 12px; letter-spacing: 0.1em; color: #a5b4fc; }
+.sc-vol-wrap { margin-top: 16px; width: 100%; max-width: 100%; }
+.sc-vol-wrap.sc-hero-vol-wrap { margin-top: 0; max-width: 420px; }
+.sc-vol { display: flex; align-items: center; gap: 12px; width: 100%; }
+.sc-vol span { font-size: 12px; letter-spacing: 0.1em; color: #a5b4fc; flex: 0 0 auto; }
+.sc-vol span svg { width: 18px; height: 18px; display: block; color: #a5b4fc; }
+.sc-vol .sc-slider { flex: 1 1 auto; min-width: 0; width: 100%; }
+.sc-vol-expand {
+  flex: 0 0 auto; width: 36px; height: 36px; padding: 0; border-radius: 10px;
+  border: 1px solid rgba(103,232,249,0.35); background: rgba(15,23,42,0.55); color: #67e8f9;
+  cursor: pointer; display: grid; place-items: center;
+  transition: border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+.sc-vol-expand svg { width: 18px; height: 18px; transition: transform 0.28s ease; }
+.sc-vol-expand.open { border-color: rgba(168,85,247,0.55); color: #e9d5ff; box-shadow: 0 0 12px rgba(168,85,247,0.25); }
+.sc-vol-members-slot {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.34s ease;
+}
+.sc-vol-wrap.open .sc-vol-members-slot { grid-template-rows: 1fr; }
+.sc-vol-members-inner { overflow: hidden; min-height: 0; }
+.sc-vol-members {
+  margin-top: 12px; padding: 12px 0 2px;
+  display: grid; gap: 14px;
+  opacity: 0; transform: translateY(-6px);
+  transition: opacity 0.28s ease, transform 0.28s ease;
+}
+.sc-vol-wrap.open .sc-vol-members { opacity: 1; transform: translateY(0); }
+.sc-vol-member { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.sc-vol-member-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  padding: 0 2px;
+}
+.sc-vol-member-name {
+  min-width: 0; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: #c4b5fd; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sc-vol-member-head em {
+  color: #67e8f9; font-style: normal; font-weight: 700; min-width: 42px; text-align: right;
+  flex: 0 0 auto;
+}
+.sc-vol-member-row { margin-top: 0; }
+.sc-vol-member-row .sc-slider { width: 100%; }
+.sc-player.vol-open { align-items: flex-start; }
+.sc-hero-vol { margin-top: 0; max-width: none; width: 100%; }
 .sc-progress { margin-top: 14px; }
 .sc-progress-bar { height: 4px; border-radius: 999px; background: linear-gradient(90deg, #a855f7, #38bdf8); box-shadow: 0 0 10px rgba(168,85,247,0.5); }
 .sc-progress-times { display: flex; justify-content: space-between; margin-top: 4px; font-size: 11px; color: #a5b4fc; letter-spacing: 0.06em; }

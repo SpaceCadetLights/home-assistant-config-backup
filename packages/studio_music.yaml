@@ -1,45 +1,427 @@
 # Package: studio_music
-# “Play music” / volume on any Assist assistant -> Music Assistant on the
-# Full Studio whole-house sync group. script.play_studio_music and
-# script.set_studio_volume are the single places that define the default target.
+# “Play music” / volume on any Assist assistant -> Music Assistant on Full Studio.
+# play_studio_music: exact search, vibe (AI Task -> MA search), or default playlist.
+
+input_text:
+  studio_music_last_pick:
+    name: Studio Music Last Pick
+    max: 255
+    initial: ""
+
+automation:
+  - id: studio_music_voice_play_deferred
+    alias: Studio Music — play after voice ack
+    description: >-
+      PlayStudioMusic intent fires this event so TTS can speak before AI/MA work.
+    mode: restart
+    trigger:
+      - platform: event
+        event_type: launchpad_studio_music_play
+    action:
+      - action: script.play_studio_music
+        data:
+          query: "{{ trigger.event.data.query | default('', true) | string | trim }}"
 
 script:
   play_studio_music:
     alias: Play Studio Music
     description: >-
-      Play music through Music Assistant on the Full Studio group. With no query
-      (or a generic word like "music") it plays the default playlist; otherwise
-      it searches Music Assistant and plays the requested song / artist / album /
-      playlist / genre. Use this whenever someone asks to play music.
+      Play music on Full Studio via Music Assistant. Empty or generic words use
+      the default playlist. Exact names (e.g. Bonobo) search MA directly. Mood
+      or situational requests (e.g. inspirational music for the morning) use AI
+      to pick a short MA search, wait for results, then play. Pass vibe language
+      in query; do not invent media URIs.
     fields:
       query:
-        description: What to play (song, artist, album, playlist, genre). Empty = default playlist.
-        example: "Bonobo"
+        description: >-
+          Song, artist, playlist, genre, or a vibe/mood description for the moment.
+        example: "something chill for a rainy afternoon"
     mode: restart
     sequence:
-      # ---- Defaults (change target player or default playlist here) ----
       - variables:
           target_player: media_player.full_studio
-          default_uri: "library://playlist/1"   # MA "All favorited tracks"
+          default_uri: "library://playlist/1"
+          ma_config_id: 01K50H4V9P53VZ36HSWHBZ13WP
           q: "{{ query | default('', true) | string | trim }}"
+          enqueue_mode: >-
+            {% set ql = q | lower %}
+            {% if 'play next' in ql or 'up next' in ql or 'queue next' in ql %}next
+            {% elif 'add to' in ql or 'add this' in ql or 'queue up' in ql or 'append' in ql %}add
+            {% else %}replace{% endif %}
           generic: >-
             {{ q == '' or (q | lower) in
                ['music','some music','tunes','some tunes','something','songs',
                 'some songs','my music','a song','anything','some tune','tune'] }}
+          is_vibe: >-
+            {% set ql = q | lower %}
+            {% set wc = q.split() | length %}
+            {% set markers = [
+              'like', 'fitting', 'fit for', 'mood', 'vibe', 'feel', 'feeling',
+              'inspirational', 'inspire', 'chill', 'relax', 'calm', 'focus',
+              'workout', 'energy', 'upbeat', 'morning', 'evening', 'afternoon',
+              'night', 'late night', 'rainy', 'sunny', 'weather', 'time of',
+              'for the', 'that is', 'that are', 'music that', 'sounds like',
+              'something', 'anything', 'cozy', 'romantic', 'party', 'study',
+              'creative', 'winding down', 'wake up', 'sunset', 'dinner'
+            ] %}
+            {% set hit = markers | select('in', ql) | list | length > 0 %}
+            {{ (wc > 3 and hit) or (wc > 5) or (hit and wc > 2) }}
+
       - choose:
-          - conditions: "{{ generic }}"
+          - conditions:
+              - condition: template
+                value_template: "{{ generic }}"
             sequence:
-              - service: music_assistant.play_media
-                target:
-                  entity_id: "{{ target_player }}"
+              - action: script.play_studio_music_ma_play
                 data:
                   media_id: "{{ default_uri }}"
-        default:
-          - service: music_assistant.play_media
-            target:
-              entity_id: "{{ target_player }}"
-            data:
-              media_id: "{{ q }}"
+                  media_type: playlist
+                  enqueue: "{{ enqueue_mode }}"
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.studio_music_last_pick
+                data:
+                  value: "default playlist"
+
+          - conditions:
+              - condition: template
+                value_template: "{{ is_vibe }}"
+            sequence:
+              - action: ai_task.generate_data
+                continue_on_error: true
+                data:
+                  task_name: studio music vibe pick
+                  entity_id: ai_task.openai_ai_task
+                  instructions: >-
+                    Pick music for a home studio (Music Assistant / Spotify search).
+
+                    User request: {{ q }}
+
+                    Context:
+                    - Local time: {{ now().strftime('%A %H:%M') }} (hour {{ now().hour }})
+                    - Weather: {{ states('weather.forecast_home') }}
+
+                    Return a SHORT search_query (1-4 words) Music Assistant can find
+                    (artist, playlist title, genre, or album—not a full sentence).
+                    For mood/vibe requests prefer media_type playlist or artist.
+                  structure:
+                    search_query:
+                      description: Short Music Assistant search string
+                      required: true
+                      selector:
+                        text:
+                    media_type:
+                      description: track, artist, playlist, or album
+                      required: true
+                      selector:
+                        text:
+                    announce:
+                      description: One short phrase describing the pick
+                      required: true
+                      selector:
+                        text:
+                response_variable: vibe_pick
+              - variables:
+                  search_name: >-
+                    {% if vibe_pick is defined and vibe_pick.data is defined
+                       and vibe_pick.data.search_query | default('') | trim != '' %}
+                      {{ vibe_pick.data.search_query | trim }}
+                    {% else %}
+                      {{ q }}
+                    {% endif %}
+                  preferred_type: >-
+                    {% if vibe_pick is defined and vibe_pick.data is defined %}
+                      {{ vibe_pick.data.media_type | default('playlist') | string | lower | trim }}
+                    {% else %}
+                      playlist
+                    {% endif %}
+                  pick_announce: >-
+                    {% if vibe_pick is defined and vibe_pick.data is defined %}
+                      {{ vibe_pick.data.announce | default('') | trim }}
+                    {% else %}
+                      {{ q[:80] }}
+                    {% endif %}
+              - action: script.play_studio_music_search_and_play
+                data:
+                  search_name: "{{ search_name }}"
+                  preferred_type: "{{ preferred_type }}"
+                  announce: "{{ pick_announce }}"
+                  enqueue: "{{ enqueue_mode }}"
+
+          - conditions:
+              - condition: template
+                value_template: "{{ not generic and not is_vibe }}"
+            sequence:
+              - variables:
+                  search_name: "{{ q }}"
+                  preferred_type: >-
+                    {% set wc = q.split() | length %}
+                    {{ 'artist' if wc <= 2 else 'track' }}
+                  pick_announce: "{{ q }}"
+              - action: script.play_studio_music_search_and_play
+                data:
+                  search_name: "{{ search_name }}"
+                  preferred_type: "{{ preferred_type }}"
+                  announce: "{{ pick_announce }}"
+                  enqueue: "{{ enqueue_mode }}"
+
+  play_studio_music_ma_play:
+    alias: Play Studio Music MA Play
+    description: Internal — MA play_media with replace queue + optional radio
+    mode: restart
+    fields:
+      media_id:
+        description: Music Assistant media URI
+      media_type:
+        description: track, artist, album, or playlist (optional)
+      enqueue:
+        description: replace (default), add, or next
+        default: replace
+      use_radio:
+        description: MA radio_mode for Spotify-like continuation after a track
+        default: false
+    sequence:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ use_radio | bool }}"
+            sequence:
+              - action: music_assistant.play_media
+                target:
+                  entity_id: media_player.full_studio
+                data:
+                  media_id: "{{ media_id }}"
+                  enqueue: "{{ enqueue | default('replace') }}"
+                  media_type: "{{ media_type | default('track') }}"
+                  radio_mode: true
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ not (use_radio | bool)
+                     and media_type | default('') | trim != '' }}
+            sequence:
+              - action: music_assistant.play_media
+                target:
+                  entity_id: media_player.full_studio
+                data:
+                  media_id: "{{ media_id }}"
+                  enqueue: "{{ enqueue | default('replace') }}"
+                  media_type: "{{ media_type }}"
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ not (use_radio | bool)
+                     and media_type | default('') | trim == '' }}
+            sequence:
+              - action: music_assistant.play_media
+                target:
+                  entity_id: media_player.full_studio
+                data:
+                  media_id: "{{ media_id }}"
+                  enqueue: "{{ enqueue | default('replace') }}"
+
+  play_studio_music_search_and_play:
+    alias: Play Studio Music Search And Play
+    description: Internal — MA search, pick URI, play on Full Studio
+    mode: restart
+    fields:
+      search_name:
+        description: Music Assistant search string
+      preferred_type:
+        description: playlist, track, artist, or album
+      announce:
+        description: Short label for last-pick helper
+      enqueue:
+        description: MA enqueue mode — replace (default), add, or next
+        default: replace
+    sequence:
+      - variables:
+          target_player: media_player.full_studio
+          default_uri: "library://playlist/1"
+          ma_config_id: 01K50H4V9P53VZ36HSWHBZ13WP
+          pref: "{{ preferred_type | default('playlist') | string | lower | trim }}"
+      - action: music_assistant.search
+        continue_on_error: true
+        data:
+          config_entry_id: "{{ ma_config_id }}"
+          name: "{{ search_name }}"
+          media_type: ["playlist", "artist", "track", "album"]
+        response_variable: ma_search
+      - variables:
+          chosen_uri: >-
+            {% set r = ma_search if ma_search is defined else {} %}
+            {% set pref = preferred_type | default('playlist') | string | lower %}
+            {% set bucket_order = {
+              'playlist': ['playlists', 'tracks', 'artists', 'albums'],
+              'track': ['tracks', 'playlists', 'artists', 'albums'],
+              'artist': ['artists', 'playlists', 'tracks', 'albums'],
+              'album': ['albums', 'tracks', 'playlists', 'artists']
+            } %}
+            {% set order = bucket_order.get(pref, ['playlists', 'tracks', 'artists', 'albums']) %}
+            {% set ns = namespace(uri='', label='', mtype='') %}
+            {% set type_from_bucket = {'playlists': 'playlist', 'tracks': 'track', 'artists': 'artist', 'albums': 'album'} %}
+            {% for pass in range(2) %}
+              {% for b in order %}
+                {% if ns.uri == '' %}
+                  {% for item in r[b] | default([]) %}
+                    {% if ns.uri == '' %}
+                      {% set uri = item.uri | default('') %}
+                      {% set fav = item.favorite | default(false) %}
+                      {% if uri and (pass == 1 or fav or uri.startswith('library://') or loop.first) %}
+                        {% set ns.uri = uri %}
+                        {% set ns.label = item.name | default('') %}
+                        {% set ns.mtype = type_from_bucket.get(b, '') %}
+                      {% endif %}
+                    {% endif %}
+                  {% endfor %}
+                {% endif %}
+              {% endfor %}
+            {% endfor %}
+            {{ ns.uri }}
+          chosen_label: >-
+            {% set r = ma_search if ma_search is defined else {} %}
+            {% set pref = preferred_type | default('playlist') | string | lower %}
+            {% set bucket_order = {
+              'playlist': ['playlists', 'tracks', 'artists', 'albums'],
+              'track': ['tracks', 'playlists', 'artists', 'albums'],
+              'artist': ['artists', 'playlists', 'tracks', 'albums'],
+              'album': ['albums', 'tracks', 'playlists', 'artists']
+            } %}
+            {% set order = bucket_order.get(pref, ['playlists', 'tracks', 'artists', 'albums']) %}
+            {% set ns = namespace(uri='', label='', mtype='') %}
+            {% set type_from_bucket = {'playlists': 'playlist', 'tracks': 'track', 'artists': 'artist', 'albums': 'album'} %}
+            {% for pass in range(2) %}
+              {% for b in order %}
+                {% if ns.uri == '' %}
+                  {% for item in r[b] | default([]) %}
+                    {% if ns.uri == '' %}
+                      {% set uri = item.uri | default('') %}
+                      {% set fav = item.favorite | default(false) %}
+                      {% if uri and (pass == 1 or fav or uri.startswith('library://') or loop.first) %}
+                        {% set ns.uri = uri %}
+                        {% set ns.label = item.name | default('') %}
+                        {% set ns.mtype = type_from_bucket.get(b, '') %}
+                      {% endif %}
+                    {% endif %}
+                  {% endfor %}
+                {% endif %}
+              {% endfor %}
+            {% endfor %}
+            {{ ns.label }}
+          chosen_media_type: >-
+            {% set r = ma_search if ma_search is defined else {} %}
+            {% set pref = preferred_type | default('playlist') | string | lower %}
+            {% set bucket_order = {
+              'playlist': ['playlists', 'tracks', 'artists', 'albums'],
+              'track': ['tracks', 'playlists', 'artists', 'albums'],
+              'artist': ['artists', 'playlists', 'tracks', 'albums'],
+              'album': ['albums', 'tracks', 'playlists', 'artists']
+            } %}
+            {% set order = bucket_order.get(pref, ['playlists', 'tracks', 'artists', 'albums']) %}
+            {% set ns = namespace(uri='', label='', mtype='') %}
+            {% set type_from_bucket = {'playlists': 'playlist', 'tracks': 'track', 'artists': 'artist', 'albums': 'album'} %}
+            {% for pass in range(2) %}
+              {% for b in order %}
+                {% if ns.uri == '' %}
+                  {% for item in r[b] | default([]) %}
+                    {% if ns.uri == '' %}
+                      {% set uri = item.uri | default('') %}
+                      {% set fav = item.favorite | default(false) %}
+                      {% if uri and (pass == 1 or fav or uri.startswith('library://') or loop.first) %}
+                        {% set ns.mtype = type_from_bucket.get(b, '') %}
+                        {% set ns.uri = uri %}
+                      {% endif %}
+                    {% endif %}
+                  {% endfor %}
+                {% endif %}
+              {% endfor %}
+            {% endfor %}
+            {{ ns.mtype }}
+          ma_enqueue: "{{ enqueue | default('replace') | string | lower | trim }}"
+          use_track_radio: >-
+            {{ (enqueue | default('replace') | string | lower | trim) == 'replace'
+               and chosen_media_type | default('') == 'track' }}
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ chosen_uri | default('') | trim != '' }}"
+            sequence:
+              - action: script.play_studio_music_ma_play
+                data:
+                  media_id: "{{ chosen_uri }}"
+                  media_type: "{{ chosen_media_type }}"
+                  enqueue: "{{ ma_enqueue }}"
+                  use_radio: "{{ use_track_radio | bool }}"
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.studio_music_last_pick
+                data:
+                  value: "{{ ((announce | default('') | string | trim) ~ ': ' ~ chosen_label ~ ' (' ~ chosen_uri ~ ')')[:255] }}"
+          - conditions:
+              - condition: template
+                value_template: "{{ chosen_uri | default('') | trim == '' }}"
+            sequence:
+              - action: music_assistant.search
+                continue_on_error: true
+                data:
+                  config_entry_id: "{{ ma_config_id }}"
+                  name: "{{ search_name }}"
+                  media_type: ["playlist", "artist", "track", "album"]
+                response_variable: ma_search_broad
+              - variables:
+                  broad_uri: >-
+                    {% set r = ma_search_broad if ma_search_broad is defined else {} %}
+                    {% set ns = namespace(uri='') %}
+                    {% for b in ['playlists', 'tracks', 'artists', 'albums'] %}
+                      {% if ns.uri == '' and (r[b] | default([]) | length > 0) %}
+                        {% set ns.uri = r[b][0].uri | default('') %}
+                      {% endif %}
+                    {% endfor %}
+                    {{ ns.uri }}
+                  broad_label: >-
+                    {% set r = ma_search_broad if ma_search_broad is defined else {} %}
+                    {% set ns = namespace(label='') %}
+                    {% for b in ['playlists', 'tracks', 'artists', 'albums'] %}
+                      {% if ns.label == '' and (r[b] | default([]) | length > 0) %}
+                        {% set ns.label = r[b][0].name | default('') %}
+                      {% endif %}
+                    {% endfor %}
+                    {{ ns.label }}
+                  broad_media_type: >-
+                    {% set r = ma_search_broad if ma_search_broad is defined else {} %}
+                    {% set type_from_bucket = {'playlists': 'playlist', 'tracks': 'track', 'artists': 'artist', 'albums': 'album'} %}
+                    {% set ns = namespace(mtype='') %}
+                    {% for b in ['playlists', 'tracks', 'artists', 'albums'] %}
+                      {% if ns.mtype == '' and (r[b] | default([]) | length > 0) %}
+                        {% set ns.mtype = type_from_bucket.get(b, '') %}
+                      {% endif %}
+                    {% endfor %}
+                    {{ ns.mtype }}
+                  play_uri: >-
+                    {% set u = broad_uri | default('') | trim %}
+                    {{ u if u != '' else default_uri }}
+                  play_media_type: >-
+                    {% set u = broad_uri | default('') | trim %}
+                    {{ broad_media_type if u != '' else 'playlist' }}
+                  last_pick_msg: >-
+                    {% set u = broad_uri | default('') | trim %}
+                    {% if u != '' %}
+                      broad: {{ broad_label }} ({{ u }})
+                    {% else %}
+                      fallback default playlist (no MA match)
+                    {% endif %}
+              - action: script.play_studio_music_ma_play
+                data:
+                  media_id: "{{ play_uri }}"
+                  media_type: "{{ play_media_type }}"
+                  enqueue: "{{ ma_enqueue }}"
+                  use_radio: >-
+                    {{ ma_enqueue == 'replace' and play_media_type == 'track' }}
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.studio_music_last_pick
+                data:
+                  value: "{{ last_pick_msg[:255] }}"
 
   set_studio_volume:
     alias: Set Studio Volume
@@ -105,15 +487,27 @@ intent_script:
     speech:
       text: >-
         {% set q = query | default('', true) | string | trim %}
-        {%- if q == '' or (q | lower) in ['music','some music','tunes','some tunes','something','songs','some songs','my music','a song','anything','tune'] -%}
+        {% set ql = q | lower %}
+        {% set wc = q.split() | length %}
+        {% set markers = [
+          'like', 'fitting', 'fit for', 'mood', 'vibe', 'feel', 'feeling',
+          'inspirational', 'inspire', 'chill', 'relax', 'calm', 'focus',
+          'morning', 'evening', 'afternoon', 'night', 'rainy', 'sunny', 'weather',
+          'for the', 'time of', 'something', 'anything', 'cozy', 'party', 'study'
+        ] %}
+        {% set hit = markers | select('in', ql) | list | length > 0 %}
+        {% set vibe = (wc > 3 and hit) or (wc > 5) or (hit and wc > 2) %}
+        {%- if q == '' or ql in ['music','some music','tunes','some tunes','something','songs','some songs','my music','a song','anything','tune'] -%}
         Playing music in the studio.
+        {%- elif vibe -%}
+        Picking something that fits.
         {%- else -%}
         Playing {{ q }} in the studio.
         {%- endif -%}
     action:
-      - service: script.play_studio_music
-        data:
-          query: "{{ query | default('', true) }}"
+      - event: launchpad_studio_music_play
+        event_data:
+          query: "{{ query | default('', true) | string | trim }}"
 
   SetStudioVolume:
     description: Set Full Studio music volume to a percent
