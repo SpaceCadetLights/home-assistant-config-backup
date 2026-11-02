@@ -1221,6 +1221,7 @@ class SpaceCadetsPanel extends HTMLElement {
       ["overview", "Overview", "◈"],
       ["lighting", "Lighting", "✦"],
       ["media", "Media", "♫"],
+      ["alarms", "Alarms", "⏰"],
       ["workshop", "Workshop", "⚒"],
       ["system", "System", "⚙"],
     ];
@@ -1262,6 +1263,11 @@ class SpaceCadetsPanel extends HTMLElement {
               <div class="sc-meta-label">CREW</div>
               <div class="sc-meta-value" id="sc-crew">--</div>
             </button>
+          </div>
+          <div class="sc-jarvis-mode glass" id="sc-jarvis-mode" role="group" aria-label="Jarvis wake modes">
+            <span class="sc-jarvis-label">WAKE</span>
+            <button type="button" class="sc-jarvis-opt" data-act="jarvis-mode" data-mode="Smart" title="Say Hey Jarvis">SMART · HEY JARVIS</button>
+            <button type="button" class="sc-jarvis-opt" data-act="jarvis-mode" data-mode="Fast" title="Say Okay Nabu">FAST · OKAY NABU</button>
           </div>
         </header>
 
@@ -1337,12 +1343,35 @@ class SpaceCadetsPanel extends HTMLElement {
     });
     wrap.querySelector("#sc-crew-btn").addEventListener("click", () => this._openCrew());
     wrap.querySelector("#sc-assist-btn").addEventListener("click", () => this._openAssist());
+    wrap.querySelectorAll("#sc-jarvis-mode [data-act='jarvis-mode']").forEach((el) =>
+      el.addEventListener("click", () => this._setJarvisMode(el.dataset.mode))
+    );
     wrap.querySelectorAll(".sc-studiobar-btns [data-act='script']").forEach((el) =>
       el.addEventListener("click", () => this._script(el.dataset.entity))
     );
 
     this._syncMenuTab();
     this._paint();
+  }
+
+  _jarvisMode() {
+    const st = this._state("input_select.jarvis_mode");
+    return st === "Fast" ? "Fast" : "Smart";
+  }
+
+  _setJarvisMode(mode) {
+    const next = mode === "Fast" ? "Fast" : "Smart";
+    if (this._jarvisMode() === next) return;
+    this._call("input_select", "select_option", { option: next }, { entity_id: "input_select.jarvis_mode" });
+  }
+
+  _paintJarvisMode() {
+    const host = this.querySelector("#sc-jarvis-mode");
+    if (!host) return;
+    const mode = this._jarvisMode();
+    host.querySelectorAll("[data-act='jarvis-mode']").forEach((el) => {
+      el.classList.toggle("on", el.dataset.mode === mode);
+    });
   }
 
   _paintStudiobarPa() {
@@ -1483,6 +1512,7 @@ class SpaceCadetsPanel extends HTMLElement {
   _paint() {
     if (!this._hass || !this._root) return;
     this._paintClock();
+    this._paintJarvisMode();
     this._paintStudiobarPa();
 
     const crew = this._crewIds();
@@ -1506,6 +1536,7 @@ class SpaceCadetsPanel extends HTMLElement {
       if (this._tab === "overview") view.innerHTML = this._htmlOverview();
       else if (this._tab === "lighting") view.innerHTML = this._htmlLighting();
       else if (this._tab === "media") view.innerHTML = this._htmlMedia();
+      else if (this._tab === "alarms") view.innerHTML = this._htmlAlarms();
       else if (this._tab === "workshop") view.innerHTML = this._htmlWorkshop();
       else view.innerHTML = this._htmlSystem();
       if (keepRadar && this._tab === "overview") {
@@ -1553,6 +1584,8 @@ class SpaceCadetsPanel extends HTMLElement {
       </div>
 
       ${this._htmlReminders()}
+
+      ${this._htmlHomeAlarms()}
 
       <div class="sc-col hero glass ${info.playing ? "live" : ""} ${this._volMembersExpanded ? "vol-open" : ""}">
         <div class="sc-hero-bg ${info.art ? "has-art" : "galaxy"}" style="${info.art ? `background-image:url('${info.art}')` : ""}"></div>
@@ -3819,6 +3852,18 @@ class SpaceCadetsPanel extends HTMLElement {
 
   /* ---------- bind view events ---------- */
   _bind(root) {
+    root.querySelectorAll("[data-act='alarm-time']").forEach((el) => {
+      el.addEventListener("change", () => {
+        if (!el.dataset.id || !el.value) return;
+        this._call("script", "alarm_update", { id: el.dataset.id, time_hhmm: el.value });
+      });
+    });
+    root.querySelectorAll("[data-act='alarm-recurring']").forEach((el) => {
+      el.addEventListener("change", () => {
+        if (!el.dataset.id) return;
+        this._call("script", "alarm_update", { id: el.dataset.id, recurring: el.value });
+      });
+    });
     root.querySelectorAll("[data-act]").forEach((el) => {
       const act = el.dataset.act;
       if (act === "select") {
@@ -3906,6 +3951,17 @@ class SpaceCadetsPanel extends HTMLElement {
         if (act === "music-mode") { this._setMusicMode(el.dataset.mode); return; }
         if (act === "rem-dismiss") { this._call("script", "reminder_dismiss", { id: el.dataset.id }); return; }
         if (act === "rem-pin") { this._call("script", "reminder_pin_toggle", { id: el.dataset.id }); return; }
+        if (act === "goto-alarms") { this._tab = "alarms"; this._toggleMenu(false); this._syncMenuTab(); this._paint(); return; }
+        if (act === "alarm-new") { this._openAlarmBuilder(); return; }
+        if (act === "alarm-toggle") { this._call("script", "alarm_toggle", { id: el.dataset.id }); return; }
+        if (act === "alarm-delete") { this._call("script", "alarm_delete", { id: el.dataset.id }); return; }
+        if (act === "alarm-music-apply") {
+          const card = el.closest(".sc-alarm");
+          const input = card?.querySelector(".sc-alarm-music");
+          const q = (input?.value || "").trim();
+          if (q) this._call("script", "alarm_resolve_music", { id: el.dataset.id, music_query: q });
+          return;
+        }
         if (act === "mx-close") { this._closeMediaExpand(); return; }
         if (act === "mx-back") { this._browseBack(); return; }
         if (act === "mx-open") { this._browseInto(el.dataset.mtype, el.dataset.mid, el.dataset.title); return; }
@@ -4036,6 +4092,33 @@ SpaceCadetsPanel.styles = `
 .sc-top-meta {
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;
   width: 100%;
+}
+.sc-jarvis-mode {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; box-sizing: border-box; padding: 8px 12px;
+}
+.sc-jarvis-label {
+  font-family: Orbitron, sans-serif; font-size: 11px; letter-spacing: 0.18em;
+  color: #e9d5ff; margin-right: 4px; text-shadow: 0 0 12px rgba(232,121,249,0.45);
+}
+.sc-jarvis-opt {
+  flex: 1 1 0; min-width: 0; max-width: 160px;
+  padding: 9px 12px; border-radius: 999px; cursor: pointer; font: inherit;
+  font-weight: 700; letter-spacing: 0.12em; font-size: 12px;
+  color: #c4b5fd; background: rgba(24,8,48,0.55);
+  border: 1px solid rgba(216,180,254,0.28);
+  transition: 0.18s ease;
+}
+.sc-jarvis-opt.on {
+  color: #fff;
+  background: linear-gradient(135deg, rgba(124,58,237,0.75), rgba(14,165,233,0.55));
+  border-color: rgba(103,232,249,0.55);
+  box-shadow: 0 0 18px rgba(168,85,247,0.35);
+}
+.sc-jarvis-opt[data-mode="Fast"].on {
+  background: linear-gradient(135deg, rgba(14,165,233,0.7), rgba(74,222,128,0.45));
+  border-color: rgba(74,222,128,0.55);
+  box-shadow: 0 0 18px rgba(56,189,248,0.35);
 }
 .sc-meta-block {
   min-width: 0; padding: 8px 10px; border-radius: 14px; background: rgba(24, 8, 48, 0.55);

@@ -1,0 +1,100 @@
+# Package: jarvis_mode
+# Dual wake words on Voice PE:
+#   Hey Jarvis  → Jarvis Smart
+#   Okay Nabu   → Jarvis Fast
+# Space Cadets header shows SMART/FAST as a status hint.
+
+input_select:
+  jarvis_mode:
+    name: Jarvis Mode
+    options:
+      - Smart
+      - Fast
+    initial: Smart
+    icon: mdi:robot-happy-outline
+
+script:
+  jarvis_apply_wake_pipelines:
+    alias: Jarvis Apply Wake Pipelines
+    description: >-
+      Lock Voice PE dual wake words to Jarvis Smart / Jarvis Fast.
+    mode: restart
+    sequence:
+      - action: select.select_option
+        target:
+          entity_id: select.home_assistant_voice_0aab68_wake_word
+        data:
+          option: Hey Jarvis
+      - action: select.select_option
+        target:
+          entity_id: select.home_assistant_voice_0aab68_assistant
+        data:
+          option: Jarvis Smart
+      - action: select.select_option
+        target:
+          entity_id: select.home_assistant_voice_0aab68_wake_word_2
+        data:
+          option: Okay Nabu
+      - action: select.select_option
+        target:
+          entity_id: select.home_assistant_voice_0aab68_assistant_2
+        data:
+          option: Jarvis Fast
+
+automation:
+  - id: jarvis_wake_pipelines_on_start
+    alias: Jarvis — restore wake pipelines on start
+    mode: single
+    trigger:
+      - platform: homeassistant
+        event: start
+      - platform: event
+        event_type: automation_reloaded
+    action:
+      - action: script.jarvis_apply_wake_pipelines
+
+  - id: jarvis_wake_pipelines_guard
+    alias: Jarvis — keep dual wake mapping
+    description: >-
+      If someone changes Voice PE wake word / assistant pairing away from
+      Hey Jarvis→Smart or Okay Nabu→Fast, put it back.
+    mode: restart
+    trigger:
+      - platform: state
+        entity_id:
+          - select.home_assistant_voice_0aab68_wake_word
+          - select.home_assistant_voice_0aab68_assistant
+          - select.home_assistant_voice_0aab68_wake_word_2
+          - select.home_assistant_voice_0aab68_assistant_2
+    condition:
+      - condition: template
+        value_template: >-
+          {{ states('select.home_assistant_voice_0aab68_wake_word') != 'Hey Jarvis'
+             or states('select.home_assistant_voice_0aab68_assistant') != 'Jarvis Smart'
+             or states('select.home_assistant_voice_0aab68_wake_word_2') != 'Okay Nabu'
+             or states('select.home_assistant_voice_0aab68_assistant_2') != 'Jarvis Fast' }}
+    action:
+      - delay:
+          milliseconds: 400
+      - action: script.jarvis_apply_wake_pipelines
+
+  - id: jarvis_mode_ui_hint
+    alias: Jarvis Mode — UI hint from last Voice PE assistant used
+    description: >-
+      Keep input_select.jarvis_mode roughly in sync when either Voice PE
+      assistant pipeline entity changes (for the Space Cadets SMART/FAST pills).
+    mode: restart
+    trigger:
+      - platform: state
+        entity_id: select.home_assistant_voice_0aab68_assistant
+        to: Jarvis Smart
+      - platform: state
+        entity_id: select.home_assistant_voice_0aab68_assistant_2
+        to: Jarvis Fast
+    action:
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.jarvis_mode
+        data:
+          option: >-
+            {{ 'Fast' if trigger.entity_id.endswith('_2') else 'Smart' }}

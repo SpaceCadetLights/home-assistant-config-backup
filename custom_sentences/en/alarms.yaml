@@ -1,0 +1,196 @@
+language: "en"
+
+# Voice alarms → SetAlarm intent → event sc_alarm_set_voice → script.alarm_set_voice.
+# Specific timed + music patterns first. music_query is a wildcard (playlist or vibe).
+
+lists:
+  clock_hour:
+    range:
+      from: 1
+      to: 12
+  clock_minute:
+    values:
+      - "00"
+      - "0"
+      - "15"
+      - "30"
+      - "45"
+  period:
+    values:
+      - morning
+      - afternoon
+      - evening
+      - night
+  music_query:
+    wildcard: true
+
+intents:
+  SetAlarm:
+    data:
+      # ---- Tomorrow at N:MM am/pm + music ----
+      - sentences:
+          - "set an alarm for tomorrow at {clock_hour} {clock_minute} a.m. [to play|playing|with] {music_query}"
+          - "set an alarm for tomorrow at {clock_hour} {clock_minute} am [to play|playing|with] {music_query}"
+          - "set an alarm tomorrow at {clock_hour} {clock_minute} a.m. [to play|playing|with] {music_query}"
+          - "wake me up tomorrow at {clock_hour} {clock_minute} a.m. [to|with|playing] {music_query}"
+          - "wake me tomorrow at {clock_hour} {clock_minute} am [with|playing] {music_query}"
+        slots:
+          day: tomorrow
+          ampm: am
+
+      - sentences:
+          - "set an alarm for tomorrow at {clock_hour} {clock_minute} p.m. [to play|playing|with] {music_query}"
+          - "set an alarm for tomorrow at {clock_hour} {clock_minute} pm [to play|playing|with] {music_query}"
+          - "wake me up tomorrow at {clock_hour} {clock_minute} p.m. [to|with|playing] {music_query}"
+        slots:
+          day: tomorrow
+          ampm: pm
+
+      # ---- Tomorrow at N am/pm + music ----
+      - sentences:
+          - "set an alarm for tomorrow at {clock_hour} a.m. [to play|playing|with] {music_query}"
+          - "set an alarm for tomorrow at {clock_hour} am [to play|playing|with] {music_query}"
+          - "set an alarm tomorrow at {clock_hour} a.m. [to play|playing|with] {music_query}"
+          - "set an alarm tomorrow at {clock_hour} am [to play|playing|with] {music_query}"
+          - "wake me up tomorrow at {clock_hour} a.m. [to|with|playing] {music_query}"
+          - "wake me up tomorrow at {clock_hour} am [with|playing] {music_query}"
+          - "wake me tomorrow at {clock_hour} am [with|playing] {music_query}"
+          - "set a wake up alarm for tomorrow at {clock_hour} am [with|playing] {music_query}"
+        slots:
+          day: tomorrow
+          ampm: am
+
+      - sentences:
+          - "set an alarm for tomorrow at {clock_hour} p.m. [to play|playing|with] {music_query}"
+          - "set an alarm for tomorrow at {clock_hour} pm [to play|playing|with] {music_query}"
+          - "wake me up tomorrow at {clock_hour} p.m. [to|with|playing] {music_query}"
+          - "wake me up tomorrow at {clock_hour} pm [with|playing] {music_query}"
+        slots:
+          day: tomorrow
+          ampm: pm
+
+      # ---- Tomorrow morning + music ----
+      - sentences:
+          - "set an alarm for tomorrow {period} [to play|playing|with] {music_query}"
+          - "set an alarm tomorrow {period} [to play|playing|with] {music_query}"
+          - "set an alarm for tomorrow in the {period} [to play|playing|with] {music_query}"
+          - "wake me up tomorrow {period} [with|playing] {music_query}"
+          - "wake me tomorrow {period} [with|playing] {music_query}"
+          - "set a morning alarm [to play|playing|with] {music_query}"
+        slots:
+          day: tomorrow
+
+      # ---- Tomorrow at N am/pm (no music) ----
+      - sentences:
+          - "set an alarm for tomorrow at {clock_hour} a.m."
+          - "set an alarm for tomorrow at {clock_hour} am"
+          - "set an alarm tomorrow at {clock_hour} a.m."
+          - "set an alarm tomorrow at {clock_hour} am"
+          - "wake me up tomorrow at {clock_hour} a.m."
+          - "wake me up tomorrow at {clock_hour} am"
+          - "wake me tomorrow at {clock_hour} am"
+          - "set an alarm for {clock_hour} a.m. tomorrow"
+          - "set an alarm for {clock_hour} am tomorrow"
+        slots:
+          day: tomorrow
+          ampm: am
+
+      - sentences:
+          - "set an alarm for tomorrow at {clock_hour} p.m."
+          - "set an alarm for tomorrow at {clock_hour} pm"
+          - "wake me up tomorrow at {clock_hour} pm"
+          - "set an alarm for {clock_hour} pm tomorrow"
+        slots:
+          day: tomorrow
+          ampm: pm
+
+      # ---- Tomorrow period (no music) ----
+      - sentences:
+          - "set an alarm for tomorrow {period}"
+          - "set an alarm tomorrow {period}"
+          - "set an alarm for tomorrow in the {period}"
+          - "wake me up tomorrow {period}"
+          - "wake me tomorrow {period}"
+          - "set an alarm for tomorrow morning"
+          - "set a morning alarm for tomorrow"
+          - "set an alarm for tomorrow"
+          - "wake me up tomorrow morning"
+        slots:
+          day: tomorrow
+          period: morning
+
+      # ---- Today / next at N am/pm + music ----
+      - sentences:
+          - "set an alarm for {clock_hour} a.m. [to play|playing|with] {music_query}"
+          - "set an alarm for {clock_hour} am [to play|playing|with] {music_query}"
+          - "set an alarm at {clock_hour} a.m. [to play|playing|with] {music_query}"
+          - "wake me up at {clock_hour} a.m. [with|playing] {music_query}"
+          - "wake me at {clock_hour} am [with|playing] {music_query}"
+        slots:
+          ampm: am
+
+      - sentences:
+          - "set an alarm for {clock_hour} p.m. [to play|playing|with] {music_query}"
+          - "set an alarm for {clock_hour} pm [to play|playing|with] {music_query}"
+          - "wake me up at {clock_hour} pm [with|playing] {music_query}"
+        slots:
+          ampm: pm
+
+      # ---- Today / next at N (no music) ----
+      - sentences:
+          - "set an alarm for {clock_hour} a.m."
+          - "set an alarm for {clock_hour} am"
+          - "set an alarm at {clock_hour} a.m."
+          - "set an alarm at {clock_hour} am"
+          - "wake me up at {clock_hour} a.m."
+          - "wake me up at {clock_hour} am"
+          - "wake me at {clock_hour} am"
+        slots:
+          ampm: am
+
+      - sentences:
+          - "set an alarm for {clock_hour} p.m."
+          - "set an alarm for {clock_hour} pm"
+          - "wake me up at {clock_hour} pm"
+        slots:
+          ampm: pm
+
+      # ---- Recurring daily ----
+      - sentences:
+          - "set a daily alarm for {clock_hour} a.m. [to play|playing|with] {music_query}"
+          - "set a daily alarm for {clock_hour} am [with|playing] {music_query}"
+          - "set a recurring alarm for {clock_hour} am [with|playing] {music_query}"
+        slots:
+          ampm: am
+          recurring: daily
+
+      - sentences:
+          - "set a daily alarm for {clock_hour} a.m."
+          - "set a daily alarm for {clock_hour} am"
+          - "set a recurring alarm for {clock_hour} am"
+        slots:
+          ampm: am
+          recurring: daily
+
+  StopAlarm:
+    data:
+      - sentences:
+          - "stop the alarm"
+          - "stop alarm"
+          - "turn off the alarm"
+          - "turn off alarm"
+          - "cancel the alarm"
+          - "dismiss the alarm"
+          - "alarm off"
+          - "shut off the alarm"
+          - "pause the alarm"
+
+  SnoozeAlarm:
+    data:
+      - sentences:
+          - "snooze"
+          - "snooze the alarm"
+          - "snooze alarm"
+          - "hit snooze"
+          - "nine more minutes"
+          - "give me nine more minutes"

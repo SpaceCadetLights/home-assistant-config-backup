@@ -1,0 +1,212 @@
+# Voice + GUI alarm clock for Space Cadets.
+#
+# custom_sentences/en/alarms.yaml → SetAlarm intent → event sc_alarm_set_voice
+#   → script.alarm_set_voice (resolve music via AI/MA, store on sensor.sc_alarms)
+# automation.sc_alarm_tick fires due alarms → announce + Music Assistant play
+# Space Cadets Alarms tab reads sensor.sc_alarms.attributes.items
+#
+# Alarm item schema:
+#   { id, label, time (HH:MM), enabled, recurring (once|daily|weekdays|weekends),
+#     next_fire (ISO), music_query, music_uri, music_label, music_type,
+#     fired_for (YYYY-MM-DD), created (ISO) }
+#
+# GOTCHAS:
+# - Store event key is `alarms` (not items — Jinja dict.items collision).
+# - Wait for new id on sensor after writes (trigger-based sensor is async).
+# - Unmatched intent slots need | default(...) BEFORE | int.
+# - input_text.sc_alarm_ringing holds the active ringing alarm id (empty = idle).
+
+input_text:
+  sc_alarm_ringing:
+    name: SC Alarm Ringing
+    max: 64
+    initial: ""
+
+template:
+  - trigger:
+      - trigger: event
+        event_type: sc_alarms_set
+    sensor:
+      - name: SC Alarms
+        unique_id: sc_alarms
+        icon: mdi:alarm
+        state: "{{ trigger.event.data.alarms | default([], true) | count }}"
+        attributes:
+          items: "{{ trigger.event.data.alarms | default([], true) }}"
+
+script:
+  alarm_add:
+    alias: Alarm Add
+    description: >-
+      Create an alarm. time_hhmm is local HH:MM (24h). day_offset 0 = today
+      (or tomorrow if that time already passed); 1 = tomorrow. recurring is
+      once, daily, weekdays, or weekends. Pass music_uri if already resolved,
+      otherwise music_query for later resolve / voice path.
+    fields:
+      time_hhmm:
+        description: Local time as HH:MM (24-hour).
+        example: "07:00"
+        required: true
+      label:
+        description: Short label for the alarm.
+        example: Morning
+      recurring:
+        description: once, daily, weekdays, or weekends.
+        example: once
+      day_offset:
+        description: 0 today (rollover if past), 1 tomorrow.
+        example: 1
+      music_query:
+        description: Playlist name or vibe for Music Assistant.
+        example: chill morning acoustic
+      music_uri:
+        description: Resolved Music Assistant media URI (optional).
+      music_label:
+        description: Display name for the music pick.
+      music_type:
+        description: playlist, track, artist, or album.
+    mode: queued
+    max: 20
+    sequence:
+      - variables:
+          cur: "{{ state_attr('sensor.sc_alarms','items') | default([], true) }}"
+          hhmm: >-
+            {% set raw = time_hhmm | default('07:00', true) | string | trim %}
+            {% if raw | length == 4 and raw[1] == ':' %}0{{ raw }}
+            {% elif raw | length >= 5 %}{{ raw[:5] }}
+            {% else %}07:00{% endif %}
+          rec: >-
+            {% set r = recurring | default('once', true) | string | lower | trim %}
+            {{ r if r in ['once','daily','weekdays','weekends'] else 'once' }}
+          day_off: "{{ day_offset | default(0) | int(0) }}"
+          lbl: "{{ (label | default('', true) | trim) or 'Alarm' }}"
+          mq: "{{ music_query | default('', true) | string | trim }}"
+          mu: "{{ music_uri | default('', true) | string | trim }}"
+          ml: "{{ music_label | default('', true) | string | trim }}"
+          mt: "{{ music_type | default('', true) | string | trim }}"
+          new_id: "{{ (now().timestamp() * 1000) | int | string }}"
+          next_iso: >-
+            {% set parts = hhmm.split(':') %}
+            {% set h = parts[0] | int(7) %}
+            {% set m = parts[1] | int(0) if parts | length > 1 else 0 %}
+            {% set start = today_at('%02d:%02d:00' | format(h, m)) + timedelta(days=day_off | int(0)) %}
+            {% set ns = namespace(base=start) %}
+            {% if (day_off | int(0)) == 0 and ns.base <= now() %}
+              {% set ns.base = ns.base + timedelta(days=1) %}
+            {% endif %}
+            {% if rec == 'weekdays' %}
+              {% for _ in range(7) %}
+                {% if ns.base.weekday() >= 5 %}
+                  {% set ns.base = ns.base + timedelta(days=1) %}
+                {% endif %}
+              {% endfor %}
+            {% elif rec == 'weekends' %}
+              {% for _ in range(7) %}
+                {% if ns.base.weekday() < 5 %}
+                  {% set ns.base = ns.base + timedelta(days=1) %}
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+            {{ ns.base.isoformat() }}
+      - event: sc_alarms_set
+        event_data:
+          alarms: >-
+            {{ cur + [{
+              'id': new_id,
+              'label': lbl,
+              'time': hhmm,
+              'enabled': true,
+              'recurring': rec,
+              'next_fire': next_iso,
+              'music_query': mq,
+              'music_uri': mu,
+              'music_label': ml if ml else mq,
+              'music_type': mt if mt else '',
+              'fired_for': '',
+              'created': now().isoformat()
+            }] }}
+      - wait_template: >-
+          {{ new_id in (state_attr('sensor.sc_alarms','items') | default([], true)
+             | map(attribute='id') | map('string') | list) }}
+        timeout: "00:00:05"
+        continue_on_timeout: true
+
+  alarm_delete:
+    alias: Alarm Delete
+    fields:
+      id:
+        description: Alarm id to remove.
+        required: true
+    mode: queued
+    max: 20
+    sequence:
+      - variables:
+          cur: "{{ state_attr('sensor.sc_alarms','items') | default([], true) }}"
+          tid: "{{ id | string }}"
+      - event: sc_alarms_set
+        event_data:
+          alarms: "{{ cur | rejectattr('id','equalto', tid | string) | list }}"
+      - wait_template: >-
+          {{ tid not in (state_attr('sensor.sc_alarms','items') | default([], true)
+             | map(attribute='id') | map('string') | list) }}
+        timeout: "00:00:05"
+        continue_on_timeout: true
+
+  alarm_toggle:
+    alias: Alarm Toggle Enabled
+    fields:
+      id:
+        description: Alarm id to enable/disable.
+        required: true
+    mode: queued
+    max: 20
+    sequence:
+      - variables:
+          cur: "{{ state_attr('sensor.sc_alarms','items') | default([], true) }}"
+          tid: "{{ id | string }}"
+      - event: sc_alarms_set
+        event_data:
+          alarms: >-
+            {%- set ns = namespace(out=[]) -%}
+            {%- for a in cur -%}
+              {%- if (a.id | string) == (tid | string) -%}
+                {%- set en = not (a.enabled | default(true)) -%}
+                {%- set nf = a.next_fire -%}
+                {%- if en -%}
+                  {%- set parts = (a.time | default('07:00')).split(':') -%}
+                  {%- set h = parts[0] | int(7) -%}
+                  {%- set m = parts[1] | int(0) if parts | length > 1 else 0 -%}
+                  {%- set base = today_at('%02d:%02d:00' | format(h, m)) -%}
+                  {%- if base <= now() -%}{%- set base = base + timedelta(days=1) -%}{%- endif -%}
+                  {%- set nf = base.isoformat() -%}
+                {%- endif -%}
+                {%- set ns.out = ns.out + [ a | combine({'enabled': en, 'next_fire': nf}) ] -%}
+              {%- else -%}
+                {%- set ns.out = ns.out + [a] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.out }}
+      - delay:
+          milliseconds: 400
+
+  alarm_update:
+    alias: Alarm Update
+    description: Patch fields on an existing alarm.
+    fields:
+      id:
+        description: Alarm id.
+        required: true
+      time_hhmm:
+        description: New HH:MM (optional).
+      label:
+        description: New label (optional).
+      recurring:
+        description: once, daily, weekdays, weekends (optional).
+      music_query:
+        description: New music query (optional).
+      music_uri:
+        description: New media URI (optional).
+      music_label:
+        description: New music display name (optional).
+      music_type:
+        descripti

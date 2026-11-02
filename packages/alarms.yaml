@@ -1,0 +1,899 @@
+# Voice + GUI alarm clock for Space Cadets.
+#
+# custom_sentences/en/alarms.yaml → SetAlarm intent → event sc_alarm_set_voice
+#   → script.alarm_set_voice (resolve music via AI/MA, store on sensor.sc_alarms)
+# automation.sc_alarm_tick fires due alarms → announce + Music Assistant play
+# Space Cadets Alarms tab reads sensor.sc_alarms.attributes.items
+#
+# Alarm item schema:
+#   { id, label, time (HH:MM), enabled, recurring (once|daily|weekdays|weekends),
+#     next_fire (ISO), music_query, music_uri, music_label, music_type,
+#     fired_for (YYYY-MM-DD), created (ISO) }
+#
+# GOTCHAS:
+# - Store event key is `alarms` (not items — Jinja dict.items collision).
+# - Wait for new id on sensor after writes (trigger-based sensor is async).
+# - Unmatched intent slots need | default(...) BEFORE | int.
+# - input_text.sc_alarm_ringing holds the active ringing alarm id (empty = idle).
+
+input_text:
+  sc_alarm_ringing:
+    name: SC Alarm Ringing
+    max: 64
+    initial: ""
+
+template:
+  - trigger:
+      - trigger: event
+        event_type: sc_alarms_set
+    sensor:
+      - name: SC Alarms
+        unique_id: sc_alarms
+        icon: mdi:alarm
+        state: "{{ trigger.event.data.alarms | default([], true) | count }}"
+        attributes:
+          items: "{{ trigger.event.data.alarms | default([], true) }}"
+
+script:
+  alarm_add:
+    alias: Alarm Add
+    description: >-
+      Create an alarm. time_hhmm is local HH:MM (24h). day_offset 0 = today
+      (or tomorrow if that time already passed); 1 = tomorrow. recurring is
+      once, daily, weekdays, or weekends. Pass music_uri if already resolved,
+      otherwise music_query for later resolve / voice path.
+    fields:
+      time_hhmm:
+        description: Local time as HH:MM (24-hour).
+        example: "07:00"
+        required: true
+      label:
+        description: Short label for the alarm.
+        example: Morning
+      recurring:
+        description: once, daily, weekdays, or weekends.
+        example: once
+      day_offset:
+        description: 0 today (rollover if past), 1 tomorrow.
+        example: 1
+      music_query:
+        description: Playlist name or vibe for Music Assistant.
+        example: chill morning acoustic
+      music_uri:
+        description: Resolved Music Assistant media URI (optional).
+      music_label:
+        description: Display name for the music pick.
+      music_type:
+        description: playlist, track, artist, or album.
+    mode: queued
+    max: 20
+    sequence:
+      - variables:
+          cur: "{{ state_attr('sensor.sc_alarms','items') | default([], true) }}"
+          hhmm: >-
+            {% set raw = time_hhmm | default('07:00', true) | string | trim %}
+            {% if raw | length == 4 and raw[1] == ':' %}0{{ raw }}
+            {% elif raw | length >= 5 %}{{ raw[:5] }}
+            {% else %}07:00{% endif %}
+          rec: >-
+            {% set r = recurring | default('once', true) | string | lower | trim %}
+            {{ r if r in ['once','daily','weekdays','weekends'] else 'once' }}
+          day_off: "{{ day_offset | default(0) | int(0) }}"
+          lbl: "{{ (label | default('', true) | trim) or 'Alarm' }}"
+          mq: "{{ music_query | default('', true) | string | trim }}"
+          mu: "{{ music_uri | default('', true) | string | trim }}"
+          ml: "{{ music_label | default('', true) | string | trim }}"
+          mt: "{{ music_type | default('', true) | string | trim }}"
+          new_id: "{{ (now().timestamp() * 1000) | int | string }}"
+          next_iso: >-
+            {% set parts = hhmm.split(':') %}
+            {% set h = parts[0] | int(7) %}
+            {% set m = parts[1] | int(0) if parts | length > 1 else 0 %}
+            {% set start = today_at('%02d:%02d:00' | format(h, m)) + timedelta(days=day_off | int(0)) %}
+            {% set ns = namespace(base=start) %}
+            {% if (day_off | int(0)) == 0 and ns.base <= now() %}
+              {% set ns.base = ns.base + timedelta(days=1) %}
+            {% endif %}
+            {% if rec == 'weekdays' %}
+              {% for _ in range(7) %}
+                {% if ns.base.weekday() >= 5 %}
+                  {% set ns.base = ns.base + timedelta(days=1) %}
+                {% endif %}
+              {% endfor %}
+            {% elif rec == 'weekends' %}
+              {% for _ in range(7) %}
+                {% if ns.base.weekday() < 5 %}
+                  {% set ns.base = ns.base + timedelta(days=1) %}
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+            {{ ns.base.isoformat() }}
+      - event: sc_alarms_set
+        event_data:
+          alarms: >-
+            {{ cur + [{
+              'id': new_id,
+              'label': lbl,
+              'time': hhmm,
+              'enabled': true,
+              'recurring': rec,
+              'next_fire': next_iso,
+              'music_query': mq,
+              'music_uri': mu,
+              'music_label': ml if ml else mq,
+              'music_type': mt if mt else '',
+              'fired_for': '',
+              'created': now().isoformat()
+            }] }}
+      - wait_template: >-
+          {{ new_id in (state_attr('sensor.sc_alarms','items') | default([], true)
+             | map(attribute='id') | map('string') | list) }}
+        timeout: "00:00:05"
+        continue_on_timeout: true
+
+  alarm_delete:
+    alias: Alarm Delete
+    fields:
+      id:
+        description: Alarm id to remove.
+        required: true
+    mode: queued
+    max: 20
+    sequence:
+      - variables:
+          cur: "{{ state_attr('sensor.sc_alarms','items') | default([], true) }}"
+          tid: "{{ id | string }}"
+      - event: sc_alarms_set
+        event_data:
+          alarms: "{{ cur | rejectattr('id','equalto', tid | string) | list }}"
+      - wait_template: >-
+          {{ tid not in (state_attr('sensor.sc_alarms','items') | default([], true)
+             | map(attribute='id') | map('string') | list) }}
+        timeout: "00:00:05"
+        continue_on_timeout: true
+
+  alarm_toggle:
+    alias: Alarm Toggle Enabled
+    fields:
+      id:
+        description: Alarm id to enable/disable.
+        required: true
+    mode: queued
+    max: 20
+    sequence:
+      - variables:
+          cur: "{{ state_attr('sensor.sc_alarms','items') | default([], true) }}"
+          tid: "{{ id | string }}"
+      - event: sc_alarms_set
+        event_data:
+          alarms: >-
+            {%- set ns = namespace(out=[]) -%}
+            {%- for a in cur -%}
+              {%- if (a.id | string) == (tid | string) -%}
+                {%- set en = not (a.enabled | default(true)) -%}
+                {%- set nf = a.next_fire -%}
+                {%- if en -%}
+                  {%- set parts = (a.time | default('07:00')).split(':') -%}
+                  {%- set h = parts[0] | int(7) -%}
+                  {%- set m = parts[1] | int(0) if parts | length > 1 else 0 -%}
+                  {%- set base = today_at('%02d:%02d:00' | format(h, m)) -%}
+                  {%- if base <= now() -%}{%- set base = base + timedelta(days=1) -%}{%- endif -%}
+                  {%- set nf = base.isoformat() -%}
+                {%- endif -%}
+                {%- set ns.out = ns.out + [ a | combine({'enabled': en, 'next_fire': nf}) ] -%}
+              {%- else -%}
+                {%- set ns.out = ns.out + [a] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.out }}
+      - delay:
+          milliseconds: 400
+
+  alarm_update:
+    alias: Alarm Update
+    description: Patch fields on an existing alarm.
+    fields:
+      id:
+        description: Alarm id.
+        required: true
+      time_hhmm:
+        description: New HH:MM (optional).
+      label:
+        description: New label (optional).
+      recurring:
+        description: once, daily, weekdays, weekends (optional).
+      music_query:
+        description: New music query (optional).
+      music_uri:
+        description: New media URI (optional).
+      music_label:
+        description: New music display name (optional).
+      music_type:
+        description: New media type (optional).
+      enabled:
+        description: true/false string (optional).
+    mode: queued
+    max: 20
+    sequence:
+      - variables:
+          cur: "{{ state_attr('sensor.sc_alarms','items') | default([], true) }}"
+          tid: "{{ id | string }}"
+          v_mu: "{{ music_uri | default('', true) | string | trim }}"
+          v_time: "{{ time_hhmm | default('', true) | string | trim }}"
+          v_label: "{{ label | default('', true) | string | trim }}"
+          v_rec: "{{ recurring | default('', true) | string | lower | trim }}"
+          v_mq: "{{ music_query | default('', true) | string | trim }}"
+          v_ml: "{{ music_label | default('', true) | string | trim }}"
+          v_mt: "{{ music_type | default('', true) | string | trim }}"
+          v_en: "{{ enabled | default('', true) | string | trim }}"
+          new_list: >-
+            {%- set ns = namespace(out=[]) -%}
+            {%- for a in cur -%}
+              {%- if (a.id | string) == (tid | string) -%}
+                {%- set p = namespace(patch={}) -%}
+                {%- if v_time != '' -%}
+                  {%- set raw = v_time -%}
+                  {%- set hhmm = ('0' ~ raw) if (raw | length == 4 and raw[1] == ':') else (raw[:5] if raw | length >= 5 else '07:00') -%}
+                  {%- set parts = hhmm.split(':') -%}
+                  {%- set h = parts[0] | int(7) -%}
+                  {%- set m = parts[1] | int(0) if parts | length > 1 else 0 -%}
+                  {%- set b = namespace(base=today_at('%02d:%02d:00' | format(h, m))) -%}
+                  {%- if b.base <= now() -%}{%- set b.base = b.base + timedelta(days=1) -%}{%- endif -%}
+                  {%- set p.patch = p.patch | combine({'time': hhmm, 'next_fire': b.base.isoformat(), 'fired_for': ''}) -%}
+                {%- endif -%}
+                {%- if v_label != '' -%}
+                  {%- set p.patch = p.patch | combine({'label': v_label}) -%}
+                {%- endif -%}
+                {%- if v_rec != '' -%}
+                  {%- set p.patch = p.patch | combine({'recurring': v_rec if v_rec in ['once','daily','weekdays','weekends'] else a.recurring}) -%}
+                {%- endif -%}
+                {%- if v_mq != '' -%}
+                  {%- set p.patch = p.patch | combine({'music_query': v_mq}) -%}
+                {%- endif -%}
+                {%- if v_mu != '' -%}
+                  {%- set p.patch = p.patch | combine({'music_uri': v_mu}) -%}
+                {%- endif -%}
+                {%- if v_ml != '' -%}
+                  {%- set p.patch = p.patch | combine({'music_label': v_ml}) -%}
+                {%- endif -%}
+                {%- if v_mt != '' -%}
+                  {%- set p.patch = p.patch | combine({'music_type': v_mt}) -%}
+                {%- endif -%}
+                {%- if enabled is defined and (enabled | string | trim) != '' -%}
+                  {%- set p.patch = p.patch | combine({'enabled': (enabled | string | lower) in ['true','1','on','yes']}) -%}
+                {%- endif -%}
+                {%- set ns.out = ns.out + [ a | combine(p.patch) ] -%}
+              {%- else -%}
+                {%- set ns.out = ns.out + [a] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.out }}
+      - event: sc_alarms_set
+        event_data:
+          alarms: "{{ new_list }}"
+      - delay:
+          milliseconds: 400
+
+  alarm_resolve_music:
+    alias: Alarm Resolve Music
+    description: >-
+      Resolve a music_query (playlist name or vibe) via AI Task + Music Assistant
+      search and store music_uri/label/type on the alarm. Call after alarm_add
+      when only a query is known.
+    fields:
+      id:
+        description: Alarm id to update.
+        required: true
+      music_query:
+        description: Playlist name or vibe description.
+        example: gentle morning acoustic
+        required: true
+    mode: queued
+    max: 10
+    sequence:
+      - variables:
+          tid: "{{ id | string }}"
+          q: "{{ music_query | default('', true) | string | trim }}"
+          ma_config_id: 01K50H4V9P53VZ36HSWHBZ13WP
+          default_uri: "library://playlist/1"
+          is_vibe: >-
+            {% set ql = q | lower %}
+            {% set wc = q.split() | length %}
+            {% set markers = [
+              'like','fitting','mood','vibe','feel','chill','relax','calm',
+              'focus','energy','upbeat','morning','wake','gentle','soft',
+              'acoustic','something','playlist for','music for'
+            ] %}
+            {% set hit = markers | select('in', ql) | list | length > 0 %}
+            {{ q != '' and ((wc > 3 and hit) or (wc > 5) or (hit and wc > 2) or 'for' in ql) }}
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ q == '' }}"
+            sequence:
+              - action: script.alarm_update
+                data:
+                  id: "{{ tid }}"
+                  music_uri: "{{ default_uri }}"
+                  music_label: Default playlist
+                  music_type: playlist
+                  music_query: ""
+          - conditions:
+              - condition: template
+                value_template: "{{ is_vibe }}"
+            sequence:
+              - action: ai_task.generate_data
+                continue_on_error: true
+                data:
+                  task_name: alarm music vibe pick
+                  entity_id: ai_task.openai_ai_task
+                  instructions: >-
+                    Pick wake-up / alarm music for Music Assistant / Spotify search.
+
+                    User request: {{ q }}
+
+                    Prefer playlists suited for mornings or gentle wake-ups unless
+                    the user asked for something energetic.
+
+                    Return a SHORT search_query (1-5 words) Music Assistant can find
+                    (playlist title, artist, or genre—not a full sentence).
+                    Prefer media_type playlist when possible.
+                  structure:
+                    search_query:
+                      description: Short Music Assistant search string
+                      required: true
+                      selector:
+                        text:
+                    media_type:
+                      description: track, artist, playlist, or album
+                      required: true
+                      selector:
+                        text:
+                    announce:
+                      description: Short label for the pick
+                      required: true
+                      selector:
+                        text:
+                response_variable: vibe_pick
+              - variables:
+                  search_name: >-
+                    {% if vibe_pick is defined and vibe_pick.data is defined
+                       and vibe_pick.data.search_query | default('') | trim != '' %}
+                      {{ vibe_pick.data.search_query | trim }}
+                    {% else %}{{ q }}{% endif %}
+                  preferred_type: >-
+                    {% if vibe_pick is defined and vibe_pick.data is defined %}
+                      {{ vibe_pick.data.media_type | default('playlist') | string | lower | trim }}
+                    {% else %}playlist{% endif %}
+                  pick_label: >-
+                    {% if vibe_pick is defined and vibe_pick.data is defined %}
+                      {{ vibe_pick.data.announce | default(q) | trim }}
+                    {% else %}{{ q[:80] }}{% endif %}
+              - action: music_assistant.search
+                continue_on_error: true
+                data:
+                  config_entry_id: "{{ ma_config_id }}"
+                  name: "{{ search_name }}"
+                  media_type: ["playlist", "artist", "track", "album"]
+                response_variable: ma_search
+              - variables:
+                  chosen_uri: >-
+                    {% set r = ma_search if ma_search is defined else {} %}
+                    {% set pref = preferred_type | default('playlist') | string | lower %}
+                    {% set bucket_order = {
+                      'playlist': ['playlists', 'tracks', 'artists', 'albums'],
+                      'track': ['tracks', 'playlists', 'artists', 'albums'],
+                      'artist': ['artists', 'playlists', 'tracks', 'albums'],
+                      'album': ['albums', 'tracks', 'playlists', 'artists']
+                    } %}
+                    {% set order = bucket_order.get(pref, ['playlists', 'tracks', 'artists', 'albums']) %}
+                    {% set ns = namespace(uri='', label='', mtype='') %}
+                    {% set type_from_bucket = {'playlists': 'playlist', 'tracks': 'track', 'artists': 'artist', 'albums': 'album'} %}
+                    {% for pass in range(2) %}
+                      {% for b in order %}
+                        {% if ns.uri == '' %}
+                          {% for item in r[b] | default([]) %}
+                            {% if ns.uri == '' %}
+                              {% set uri = item.uri | default('') %}
+                              {% set fav = item.favorite | default(false) %}
+                              {% if uri and (pass == 1 or fav or uri.startswith('library://') or loop.first) %}
+                                {% set ns.uri = uri %}
+                                {% set ns.label = item.name | default('') %}
+                                {% set ns.mtype = type_from_bucket.get(b, '') %}
+                              {% endif %}
+                            {% endif %}
+                          {% endfor %}
+                        {% endif %}
+                      {% endfor %}
+                    {% endfor %}
+                    {{ ns.uri if ns.uri else default_uri }}
+                  chosen_label: >-
+                    {% set r = ma_search if ma_search is defined else {} %}
+                    {% set pref = preferred_type | default('playlist') | string | lower %}
+                    {% set bucket_order = {
+                      'playlist': ['playlists', 'tracks', 'artists', 'albums'],
+                      'track': ['tracks', 'playlists', 'artists', 'albums'],
+                      'artist': ['artists', 'playlists', 'tracks', 'albums'],
+                      'album': ['albums', 'tracks', 'playlists', 'artists']
+                    } %}
+                    {% set order = bucket_order.get(pref, ['playlists', 'tracks', 'artists', 'albums']) %}
+                    {% set ns = namespace(uri='', label='') %}
+                    {% for pass in range(2) %}
+                      {% for b in order %}
+                        {% if ns.uri == '' %}
+                          {% for item in r[b] | default([]) %}
+                            {% if ns.uri == '' %}
+                              {% set uri = item.uri | default('') %}
+                              {% set fav = item.favorite | default(false) %}
+                              {% if uri and (pass == 1 or fav or uri.startswith('library://') or loop.first) %}
+                                {% set ns.uri = uri %}
+                                {% set ns.label = item.name | default('') %}
+                              {% endif %}
+                            {% endif %}
+                          {% endfor %}
+                        {% endif %}
+                      {% endfor %}
+                    {% endfor %}
+                    {{ ns.label if ns.label else pick_label }}
+                  chosen_type: >-
+                    {% set r = ma_search if ma_search is defined else {} %}
+                    {% set pref = preferred_type | default('playlist') | string | lower %}
+                    {% set bucket_order = {
+                      'playlist': ['playlists', 'tracks', 'artists', 'albums'],
+                      'track': ['tracks', 'playlists', 'artists', 'albums'],
+                      'artist': ['artists', 'playlists', 'tracks', 'albums'],
+                      'album': ['albums', 'tracks', 'playlists', 'artists']
+                    } %}
+                    {% set order = bucket_order.get(pref, ['playlists', 'tracks', 'artists', 'albums']) %}
+                    {% set ns = namespace(uri='', mtype='') %}
+                    {% set type_from_bucket = {'playlists': 'playlist', 'tracks': 'track', 'artists': 'artist', 'albums': 'album'} %}
+                    {% for pass in range(2) %}
+                      {% for b in order %}
+                        {% if ns.uri == '' %}
+                          {% for item in r[b] | default([]) %}
+                            {% if ns.uri == '' %}
+                              {% set uri = item.uri | default('') %}
+                              {% set fav = item.favorite | default(false) %}
+                              {% if uri and (pass == 1 or fav or uri.startswith('library://') or loop.first) %}
+                                {% set ns.uri = uri %}
+                                {% set ns.mtype = type_from_bucket.get(b, '') %}
+                              {% endif %}
+                            {% endif %}
+                          {% endfor %}
+                        {% endif %}
+                      {% endfor %}
+                    {% endfor %}
+                    {{ ns.mtype if ns.mtype else preferred_type }}
+              - action: script.alarm_update
+                data:
+                  id: "{{ tid }}"
+                  music_uri: "{{ chosen_uri }}"
+                  music_label: "{{ chosen_label }}"
+                  music_type: "{{ chosen_type }}"
+                  music_query: "{{ q }}"
+          - conditions:
+              - condition: template
+                value_template: "{{ q != '' and not is_vibe }}"
+            sequence:
+              - action: music_assistant.search
+                continue_on_error: true
+                data:
+                  config_entry_id: "{{ ma_config_id }}"
+                  name: "{{ q }}"
+                  media_type: ["playlist", "artist", "track", "album"]
+                response_variable: ma_search
+              - variables:
+                  chosen_uri: >-
+                    {% set r = ma_search if ma_search is defined else {} %}
+                    {% set ns = namespace(uri='', label='', mtype='playlist') %}
+                    {% set type_from_bucket = {'playlists': 'playlist', 'tracks': 'track', 'artists': 'artist', 'albums': 'album'} %}
+                    {% for b in ['playlists', 'tracks', 'artists', 'albums'] %}
+                      {% if ns.uri == '' and (r[b] | default([]) | length > 0) %}
+                        {% set ns.uri = r[b][0].uri | default('') %}
+                        {% set ns.label = r[b][0].name | default(q) %}
+                        {% set ns.mtype = type_from_bucket.get(b, 'playlist') %}
+                      {% endif %}
+                    {% endfor %}
+                    {{ ns.uri if ns.uri else default_uri }}
+                  chosen_label: >-
+                    {% set r = ma_search if ma_search is defined else {} %}
+                    {% set ns = namespace(label=q) %}
+                    {% for b in ['playlists', 'tracks', 'artists', 'albums'] %}
+                      {% if ns.label == q and (r[b] | default([]) | length > 0) %}
+                        {% set ns.label = r[b][0].name | default(q) %}
+                      {% endif %}
+                    {% endfor %}
+                    {{ ns.label }}
+                  chosen_type: >-
+                    {% set r = ma_search if ma_search is defined else {} %}
+                    {% set ns = namespace(mtype='playlist', found=false) %}
+                    {% set type_from_bucket = {'playlists': 'playlist', 'tracks': 'track', 'artists': 'artist', 'albums': 'album'} %}
+                    {% for b in ['playlists', 'tracks', 'artists', 'albums'] %}
+                      {% if not ns.found and (r[b] | default([]) | length > 0) %}
+                        {% set ns.mtype = type_from_bucket.get(b, 'playlist') %}
+                        {% set ns.found = true %}
+                      {% endif %}
+                    {% endfor %}
+                    {{ ns.mtype }}
+              - action: script.alarm_update
+                data:
+                  id: "{{ tid }}"
+                  music_uri: "{{ chosen_uri }}"
+                  music_label: "{{ chosen_label }}"
+                  music_type: "{{ chosen_type }}"
+                  music_query: "{{ q }}"
+
+  alarm_set_voice:
+    alias: Alarm Set Voice
+    description: >-
+      Set a wake-up alarm from voice or Jarvis. Pass clock_hour (1-12) and ampm
+      (am/pm), or period morning/afternoon/evening/night, plus optional day
+      (tomorrow/tonight). music_query is a playlist name or vibe — AI picks the
+      best Music Assistant match. recurring defaults to once.
+    fields:
+      clock_hour:
+        description: Hour 1-12 (0 if using period default).
+        example: 7
+      clock_minute:
+        description: Minute 0-59.
+        example: 0
+      ampm:
+        description: am or pm.
+        example: am
+      period:
+        description: morning, afternoon, evening, or night (when no clock hour).
+        example: morning
+      day:
+        description: tomorrow, tonight, or empty for next occurrence.
+        example: tomorrow
+      music_query:
+        description: Playlist name or vibe for alarm music.
+        example: chill morning acoustic
+      label:
+        description: Optional alarm label.
+      recurring:
+        description: once, daily, weekdays, weekends.
+        example: once
+    mode: queued
+    max: 10
+    sequence:
+      - variables:
+          day_s: "{{ day | default('', true) | string | lower | trim }}"
+          period_s: "{{ period | default('', true) | string | lower | trim }}"
+          ampm_s: "{{ ampm | default('', true) | string | lower | trim }}"
+          clock_h: "{{ clock_hour | default(0) | int(0) }}"
+          clock_m: "{{ clock_minute | default(0) | int(0) }}"
+          mq: "{{ music_query | default('', true) | string | trim }}"
+          rec: >-
+            {% set r = recurring | default('once', true) | string | lower | trim %}
+            {{ r if r in ['once','daily','weekdays','weekends'] else 'once' }}
+          hhmm: >-
+            {%- if clock_h > 0 -%}
+              {%- set h24 = clock_h % 12 -%}
+              {%- if ampm_s in ['pm','p.m.'] -%}{%- set h24 = h24 + 12 -%}{%- endif -%}
+              {%- if ampm_s in ['am','a.m.'] and clock_h == 12 -%}{%- set h24 = 0 -%}{%- endif -%}
+              {%- if ampm_s in ['pm','p.m.'] and clock_h == 12 -%}{%- set h24 = 12 -%}{%- endif -%}
+              {%- if ampm_s not in ['am','a.m.','pm','p.m.'] and clock_h < 8 and period_s != 'evening' -%}
+                {%- set h24 = h24 -%}
+              {%- elif ampm_s not in ['am','a.m.','pm','p.m.'] and clock_h <= 11 and day_s == 'tomorrow' -%}
+                {%- set h24 = h24 -%}
+              {%- endif -%}
+              {{ '%02d:%02d' | format(h24, clock_m) }}
+            {%- else -%}
+              {%- if period_s == 'afternoon' -%}14:00
+              {%- elif period_s == 'evening' -%}18:00
+              {%- elif period_s == 'night' -%}21:00
+              {%- else -%}07:00
+              {%- endif -%}
+            {%- endif -%}
+          day_off: >-
+            {%- if day_s == 'tonight' -%}0
+            {%- elif day_s == 'tomorrow' -%}1
+            {%- else -%}0
+            {%- endif -%}
+          lbl: >-
+            {{ (label | default('', true) | trim) or ('Alarm' if not mq else 'Alarm · ' ~ mq[:40]) }}
+      - action: script.alarm_add
+        data:
+          time_hhmm: "{{ hhmm }}"
+          label: "{{ lbl }}"
+          recurring: "{{ rec }}"
+          day_offset: "{{ day_off | int(0) }}"
+          music_query: "{{ mq }}"
+          music_label: "{{ mq }}"
+      - variables:
+          new_id: >-
+            {% set items = state_attr('sensor.sc_alarms','items') | default([], true) %}
+            {% set ns = namespace(id='') %}
+            {% for a in items | reverse %}
+              {% if ns.id == '' %}{% set ns.id = a.id | string %}{% endif %}
+            {% endfor %}
+            {{ ns.id }}
+      - if: "{{ new_id != '' and mq != '' }}"
+        then:
+          - action: script.alarm_resolve_music
+            data:
+              id: "{{ new_id }}"
+              music_query: "{{ mq }}"
+      - if: "{{ new_id != '' and mq == '' }}"
+        then:
+          - action: script.alarm_update
+            data:
+              id: "{{ new_id }}"
+              music_uri: library://playlist/1
+              music_label: Default playlist
+              music_type: playlist
+
+  alarm_fire:
+    alias: Alarm Fire
+    description: Announce and play the alarm's Music Assistant pick on Full Studio.
+    fields:
+      id:
+        description: Alarm id that is ringing.
+        required: true
+    mode: parallel
+    max: 5
+    sequence:
+      - variables:
+          tid: "{{ id | string }}"
+          alarm: >-
+            {% set items = state_attr('sensor.sc_alarms','items') | default([], true) %}
+            {% set ns = namespace(a={}) %}
+            {% for x in items %}
+              {% if (x.id | string) == (tid | string) %}{% set ns.a = x %}{% endif %}
+            {% endfor %}
+            {{ ns.a }}
+          sat: assist_satellite.home_assistant_voice_0aab68_assist_satellite
+          spoken: >-
+            {% set t = alarm.time | default('07:00') %}
+            {% set parts = t.split(':') %}
+            {% set h = parts[0] | int(7) %}
+            {% set m = parts[1] | int(0) if parts | length > 1 else 0 %}
+            {% set h12 = h % 12 %}
+            {% if h12 == 0 %}{% set h12 = 12 %}{% endif %}
+            {% set ap = 'AM' if h < 12 else 'PM' %}
+            {% set music = alarm.music_label | default('', true) %}
+            Good morning. It's {{ h12 }}{% if m > 0 %}:{{ '%02d' | format(m) }}{% endif %} {{ ap }}{% if music %}. Playing {{ music }}{% endif %}.
+          media_uri: "{{ alarm.music_uri | default('', true) | string | trim }}"
+          media_type: "{{ alarm.music_type | default('playlist', true) | string | trim }}"
+          media_q: "{{ alarm.music_query | default('', true) | string | trim }}"
+      - action: assist_satellite.announce
+        continue_on_error: true
+        target:
+          entity_id: "{{ sat }}"
+        data:
+          message: "{{ spoken }}"
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ media_uri != '' }}"
+            sequence:
+              - action: script.play_studio_music_ma_play
+                data:
+                  media_id: "{{ media_uri }}"
+                  media_type: "{{ media_type if media_type else 'playlist' }}"
+                  enqueue: replace
+                  use_radio: false
+          - conditions:
+              - condition: template
+                value_template: "{{ media_uri == '' and media_q != '' }}"
+            sequence:
+              - action: script.play_studio_music
+                data:
+                  query: "{{ media_q }}"
+          - conditions:
+              - condition: template
+                value_template: "{{ media_uri == '' and media_q == '' }}"
+            sequence:
+              - action: script.play_studio_music_ma_play
+                data:
+                  media_id: library://playlist/1
+                  media_type: playlist
+                  enqueue: replace
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.sc_alarm_ringing
+        data:
+          value: "{{ tid }}"
+
+  alarm_stop:
+    alias: Alarm Stop
+    description: Stop a ringing alarm — pause Full Studio music and clear ringing state.
+    mode: single
+    sequence:
+      - action: media_player.media_pause
+        continue_on_error: true
+        target:
+          entity_id: media_player.full_studio
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.sc_alarm_ringing
+        data:
+          value: ""
+
+  alarm_snooze:
+    alias: Alarm Snooze
+    description: Pause music and reschedule the ringing alarm for 9 minutes later.
+    fields:
+      id:
+        description: Alarm id to snooze (defaults to currently ringing).
+      minutes:
+        description: Snooze length in minutes.
+        example: 9
+    mode: queued
+    max: 5
+    sequence:
+      - variables:
+          tid: >-
+            {% set raw = id | default('', true) | string | trim %}
+            {% set ringing = states('input_text.sc_alarm_ringing') | default('', true) | string | trim %}
+            {{ raw if raw else ringing }}
+          mins: "{{ minutes | default(9) | int(9) }}"
+      - action: media_player.media_pause
+        continue_on_error: true
+        target:
+          entity_id: media_player.full_studio
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.sc_alarm_ringing
+        data:
+          value: ""
+      - if: "{{ tid != '' }}"
+        then:
+          - variables:
+              cur: "{{ state_attr('sensor.sc_alarms','items') | default([], true) }}"
+              new_list: >-
+                {%- set ns = namespace(out=[]) -%}
+                {%- set when = (now() + timedelta(minutes=mins | int(9))).isoformat() -%}
+                {%- for a in cur -%}
+                  {%- if (a.id | string) == (tid | string) -%}
+                    {%- set ns.out = ns.out + [ a | combine({'enabled': true, 'next_fire': when, 'fired_for': ''}) ] -%}
+                  {%- else -%}
+                    {%- set ns.out = ns.out + [a] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.out }}
+          - event: sc_alarms_set
+            event_data:
+              alarms: "{{ new_list }}"
+
+automation:
+  - id: sc_alarm_set_voice_deferred
+    alias: SC Alarm — set after voice ack
+    description: >-
+      SetAlarm intent fires sc_alarm_set_voice so TTS can speak before AI/MA work.
+    mode: queued
+    max: 10
+    trigger:
+      - platform: event
+        event_type: sc_alarm_set_voice
+    action:
+      - action: script.alarm_set_voice
+        data:
+          clock_hour: "{{ trigger.event.data.clock_hour | default(0) }}"
+          clock_minute: "{{ trigger.event.data.clock_minute | default(0) }}"
+          ampm: "{{ trigger.event.data.ampm | default('', true) }}"
+          period: "{{ trigger.event.data.period | default('', true) }}"
+          day: "{{ trigger.event.data.day | default('', true) }}"
+          music_query: "{{ trigger.event.data.music_query | default('', true) }}"
+          label: "{{ trigger.event.data.label | default('', true) }}"
+          recurring: "{{ trigger.event.data.recurring | default('once', true) }}"
+
+  - id: sc_alarm_tick
+    alias: SC Alarm tick (fire due alarms)
+    mode: single
+    triggers:
+      - trigger: time_pattern
+        minutes: "/1"
+      - trigger: homeassistant
+        event: start
+    conditions: []
+    actions:
+      - variables:
+          cur: "{{ state_attr('sensor.sc_alarms','items') | default([], true) }}"
+          today: "{{ now().date().isoformat() }}"
+          due_list: >-
+            {%- set ns = namespace(out=[]) -%}
+            {%- for a in cur -%}
+              {%- set en = a.enabled | default(true) -%}
+              {%- set nf = as_datetime(a.next_fire) if a.next_fire is defined else none -%}
+              {%- set already = (a.fired_for | default('', true) | string) == today -%}
+              {%- if en and nf is not none and nf <= now() and not already -%}
+                {%- set ns.out = ns.out + [a] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.out }}
+      - if: "{{ due_list | length > 0 }}"
+        then:
+          - event: sc_alarms_set
+            event_data:
+              alarms: >-
+                {%- set ns = namespace(out=[]) -%}
+                {%- for a in cur -%}
+                  {%- set en = a.enabled | default(true) -%}
+                  {%- set nf = as_datetime(a.next_fire) if a.next_fire is defined else none -%}
+                  {%- set already = (a.fired_for | default('', true) | string) == today -%}
+                  {%- if en and nf is not none and nf <= now() and not already -%}
+                    {%- set rec = a.recurring | default('once') -%}
+                    {%- set parts = (a.time | default('07:00')).split(':') -%}
+                    {%- set h = parts[0] | int(7) -%}
+                    {%- set m = parts[1] | int(0) if parts | length > 1 else 0 -%}
+                    {%- if rec == 'once' -%}
+                      {%- set ns.out = ns.out + [ a | combine({'fired_for': today, 'enabled': false}) ] -%}
+                    {%- else -%}
+                      {%- set start = today_at('%02d:%02d:00' | format(h, m)) + timedelta(days=1) -%}
+                      {%- set n2 = namespace(base=start) -%}
+                      {%- if rec == 'weekdays' -%}
+                        {%- for _ in range(7) -%}
+                          {%- if n2.base.weekday() >= 5 -%}{%- set n2.base = n2.base + timedelta(days=1) -%}{%- endif -%}
+                        {%- endfor -%}
+                      {%- elif rec == 'weekends' -%}
+                        {%- for _ in range(7) -%}
+                          {%- if n2.base.weekday() < 5 -%}{%- set n2.base = n2.base + timedelta(days=1) -%}{%- endif -%}
+                        {%- endfor -%}
+                      {%- endif -%}
+                      {%- set ns.out = ns.out + [ a | combine({'fired_for': today, 'next_fire': n2.base.isoformat()}) ] -%}
+                    {%- endif -%}
+                  {%- else -%}
+                    {%- set ns.out = ns.out + [a] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.out }}
+          - repeat:
+              for_each: "{{ due_list }}"
+              sequence:
+                - action: script.turn_on
+                  target:
+                    entity_id: script.alarm_fire
+                  data:
+                    variables:
+                      id: "{{ repeat.item.id }}"
+
+intent_script:
+  SetAlarm:
+    async_action: true
+    speech:
+      text: >-
+        {% set day = day | default('', true) | string | lower %}
+        {% set period = period | default('', true) | string | lower %}
+        {% set ampm = ampm | default('', true) | string | lower %}
+        {% set clock_h = clock_hour | default(0) | int(0) %}
+        {% set clock_m = clock_minute | default(0) | int(0) %}
+        {% set music = (music_query | default('', true) | trim) %}
+        {% set music_bit = (' with ' ~ music) if music else '' %}
+        {%- if clock_h > 0 and day == 'tomorrow' -%}
+        Okay, I've set your alarm for tomorrow at {{ clock_h }}{% if clock_m > 0 %}:{{ '%02d' | format(clock_m) }}{% endif %}{{ ' ' ~ ampm if ampm else ' am' }}{{ music_bit }}.
+        {%- elif clock_h > 0 -%}
+        Okay, I've set your alarm for {{ clock_h }}{% if clock_m > 0 %}:{{ '%02d' | format(clock_m) }}{% endif %}{{ ' ' ~ ampm if ampm else '' }}{{ music_bit }}.
+        {%- elif day == 'tomorrow' or period in ['morning','afternoon','evening','night'] -%}
+        Okay, I've set your alarm for {{ 'tomorrow ' if day == 'tomorrow' else '' }}{{ period if period else 'morning' }}{{ music_bit }}.
+        {%- else -%}
+        Okay, I've set your alarm{{ music_bit }}.
+        {%- endif -%}
+    action:
+      - event: sc_alarm_set_voice
+        event_data:
+          clock_hour: "{{ clock_hour | default(0) | int(0) }}"
+          clock_minute: "{{ clock_minute | default(0) | int(0) }}"
+          ampm: "{{ ampm | default('', true) }}"
+          period: "{{ period | default('', true) }}"
+          day: "{{ day | default('', true) }}"
+          music_query: "{{ music_query | default('', true) }}"
+          label: "{{ label | default('', true) }}"
+          recurring: "{{ recurring | default('once', true) }}"
+
+  StopAlarm:
+    async_action: true
+    speech:
+      text: Okay, stopping the alarm.
+    action:
+      - action: script.alarm_stop
+
+  SnoozeAlarm:
+    async_action: true
+    speech:
+      text: Okay, snoozing for nine minutes.
+    action:
+      - action: script.alarm_snooze
+        data:
+          minutes: 9
