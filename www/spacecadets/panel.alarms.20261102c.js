@@ -7,16 +7,24 @@
   if (!Ctor) throw new Error("spacecadets-panel not registered");
   const Proto = Ctor.prototype;
 
-  if (!document.getElementById("sc-alarm-css")) {
-    const style = document.createElement("style");
-    style.id = "sc-alarm-css";
+  // Always refresh CSS (versioned) so icon/toggle fixes aren't stuck behind an old style tag.
+  {
+    let style = document.getElementById("sc-alarm-css");
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "sc-alarm-css";
+      document.head.appendChild(style);
+    }
+    style.setAttribute("data-v", "20261103b");
     style.textContent = `
 .sc-clock-btn {
   cursor: pointer; transition: 0.2s ease; position: relative;
   text-align: center;
+  overflow: visible;
 }
 .sc-clock-btn:hover { border-color: rgba(94,234,212,0.55); box-shadow: 0 0 24px rgba(45,212,191,0.28); }
-.sc-clock-btn.has-alarm { border-color: rgba(251,191,36,0.42); }
+.sc-clock-btn.has-alarm { border-color: rgba(74,222,128,0.35); }
+.sc-clock-btn.alarm-off { border-color: rgba(248,113,113,0.3); }
 .sc-clock-btn.ringing {
   border-color: rgba(251,191,36,0.7);
   box-shadow: 0 0 28px rgba(251,191,36,0.45);
@@ -30,24 +38,46 @@
   display:flex; align-items:center; justify-content:center;
   gap:0; margin-top:4px; min-height:0;
 }
+/* Tiny corner ON/OFF toggle — SVG must stay 10px (bare SVG ≈ 300×150). */
 .sc-clock-ico {
-  position: absolute; top: 7px; right: 8px;
-  width: 12px; height: 12px; line-height: 0;
-  color: #fbbf24; opacity: 0.95; pointer-events: none;
-  filter: drop-shadow(0 0 6px rgba(251,191,36,0.55));
+  position: absolute; top: 5px; right: 5px; z-index: 2;
+  box-sizing: border-box;
+  width: 18px !important; height: 18px !important;
+  max-width: 18px !important; max-height: 18px !important;
+  padding: 0; margin: 0;
+  display: inline-flex !important; align-items: center; justify-content: center;
+  line-height: 0; overflow: hidden;
+  border-radius: 999px;
+  border: 1px solid rgba(74,222,128,0.55);
+  background: rgba(22, 101, 52, 0.55);
+  color: #4ade80;
+  cursor: pointer;
+  appearance: none; -webkit-appearance: none;
+  filter: none;
+  box-shadow: 0 0 8px rgba(74,222,128,0.35);
 }
-.sc-clock-ico svg {
-  width: 12px !important; height: 12px !important;
-  display: block; flex: none;
+.sc-clock-ico svg,
+.sc-clock-btn .sc-clock-ico svg,
+#sc-clock-ico svg {
+  width: 10px !important; height: 10px !important;
+  max-width: 10px !important; max-height: 10px !important;
+  min-width: 0 !important; min-height: 0 !important;
+  display: block !important; flex: none !important;
+  pointer-events: none;
+}
+.sc-clock-btn.alarm-off .sc-clock-ico {
+  color: #f87171;
+  border-color: rgba(248,113,113,0.55);
+  background: rgba(127, 29, 29, 0.55);
+  box-shadow: 0 0 8px rgba(248,113,113,0.35);
 }
 .sc-clock-btn.ringing .sc-clock-ico {
-  color:#fbbf24; filter: drop-shadow(0 0 8px rgba(251,191,36,0.75));
+  color: #fbbf24;
+  border-color: rgba(251,191,36,0.7);
+  background: rgba(120, 53, 15, 0.6);
+  box-shadow: 0 0 10px rgba(251,191,36,0.55);
 }
-.sc-clock-next {
-  font-family: Orbitron, sans-serif; font-size:8px; letter-spacing:0.1em;
-  color:#fbbf24; opacity:0.9; margin-top:3px; text-transform:uppercase;
-  line-height: 1.2; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+.sc-clock-next { display: none !important; }
 
 .sc-modal-alarms { text-align: center; position: relative; }
 .sc-modal-alarms .sc-modal-head {
@@ -109,13 +139,21 @@
   padding:8px 14px; color-scheme: dark; text-align:center; min-width: 7.5em;
 }
 .sc-alarm-toggle {
-  min-width:64px; height:38px; border-radius:12px; border:1px solid rgba(251,191,36,0.35);
-  background:rgba(40,18,8,0.5); color:#fdba74; font-family: Orbitron, sans-serif;
-  font-size:11px; letter-spacing:0.14em; cursor:pointer;
+  min-width: 76px; height: 40px; border-radius: 999px;
+  border: 1px solid rgba(248,113,113,0.55);
+  background: linear-gradient(135deg, rgba(127,29,29,0.75), rgba(69,10,10,0.7));
+  color: #fecaca;
+  font-family: Orbitron, sans-serif;
+  font-size: 11px; letter-spacing: 0.16em; cursor: pointer;
+  box-shadow: 0 0 16px rgba(248,113,113,0.22);
+  transition: 0.2s ease;
 }
+.sc-alarm-toggle:hover { filter: brightness(1.08); }
 .sc-alarm-toggle.on {
-  color:#5eead4; border-color:rgba(94,234,212,0.55);
-  box-shadow:0 0 16px rgba(45,212,191,0.25);
+  border-color: rgba(74,222,128,0.65);
+  background: linear-gradient(135deg, rgba(21,128,61,0.8), rgba(6,78,59,0.75));
+  color: #bbf7d0;
+  box-shadow: 0 0 18px rgba(74,222,128,0.3);
 }
 .sc-alarm-label {
   font-family: Rajdhani, sans-serif; font-weight:700; font-size:18px;
@@ -206,7 +244,6 @@
   border-color: rgba(251,113,133,0.55); color:#ffe4e6;
 }
 `;
-    document.head.appendChild(style);
   }
 
   const REC_OPTS = [
@@ -260,6 +297,22 @@
 
   Proto._enabledAlarms = function () {
     return this._alarms().filter((a) => a.enabled !== false);
+  };
+
+  /** Corner bell: green = on, red = off. Tap flips every alarm to the opposite master state. */
+  Proto._toggleAlarmsMaster = function () {
+    const items = this._alarms();
+    if (!items.length) {
+      this._openAlarmsSheet();
+      return;
+    }
+    const turnOn = this._enabledAlarms().length === 0;
+    items.forEach((a) => {
+      const on = a.enabled !== false;
+      if (turnOn === on) return;
+      this._call("script", "alarm_toggle", { id: String(a.id) });
+    });
+    this._scToast?.(turnOn ? "ALARMS ON" : "ALARMS OFF");
   };
 
   Proto._nextAlarm = function () {
@@ -361,17 +414,29 @@
     btn.id = "sc-clock-btn";
     btn.title = "Alarms";
     btn.setAttribute("aria-label", "Open alarms");
+    // Inline width/height on the SVG — bare SVGs default to ~300×150 otherwise.
+    const bellSvg = String(this._ic("bell") || "")
+      .replace("<svg ", '<svg width="10" height="10" style="width:10px;height:10px;display:block" ');
     btn.innerHTML = `
-      <span class="sc-clock-ico" id="sc-clock-ico" hidden>${this._ic("bell")}</span>
+      <button type="button" class="sc-clock-ico" id="sc-clock-ico" hidden title="Toggle alarms" aria-label="Toggle alarms">${bellSvg}</button>
       <div class="sc-meta-label">${label ? label.textContent : "LOCAL TIME"}</div>
       <div class="sc-clock-row">
         <div class="sc-meta-value" id="sc-clock">--</div>
-      </div>
-      <div class="sc-clock-next" id="sc-clock-next" hidden></div>`;
+      </div>`;
     block.replaceWith(btn);
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", (ev) => {
+      if (ev.target.closest("#sc-clock-ico")) return;
       if (this._ringingAlarmId()) this._openAlarmRingSheet(true);
       else this._openAlarmsSheet();
+    });
+    btn.querySelector("#sc-clock-ico")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (this._ringingAlarmId()) {
+        this._openAlarmRingSheet(true);
+        return;
+      }
+      this._toggleAlarmsMaster();
     });
 
     if (!this.querySelector("#sc-alarm-ring-root")) {
@@ -394,26 +459,41 @@
     _paintClockOrig.call(this);
     const btn = this.querySelector("#sc-clock-btn");
     const ico = this.querySelector("#sc-clock-ico");
-    const nextEl = this.querySelector("#sc-clock-next");
-    const has = this._enabledAlarms().length > 0;
+    const enabled = this._enabledAlarms();
+    const any = this._alarms().length > 0;
+    const hasOn = enabled.length > 0;
     const ringing = !!this._ringingAlarmId();
     if (btn) {
-      btn.classList.toggle("has-alarm", has);
+      btn.classList.toggle("has-alarm", hasOn);
+      btn.classList.toggle("alarm-off", any && !hasOn && !ringing);
       btn.classList.toggle("ringing", ringing);
-    }
-    if (ico) ico.hidden = !has && !ringing;
-    if (nextEl) {
       const n = this._nextAlarm();
-      if (ringing) {
-        nextEl.hidden = false;
-        nextEl.textContent = "ALARM RINGING";
-      } else if (n) {
-        nextEl.hidden = false;
-        nextEl.textContent = `NEXT ${this._fmtAlarmTime(n.time)}`;
-      } else {
-        nextEl.hidden = true;
-        nextEl.textContent = "";
-      }
+      btn.title = ringing
+        ? "Alarm ringing — tap for snooze/stop"
+        : hasOn && n
+        ? `Alarms on · next ${this._fmtAlarmTime(n.time)}`
+        : any
+        ? "Alarms off — tap to manage"
+        : "Alarms — tap to set";
+    }
+    if (ico) {
+      ico.hidden = !any && !ringing;
+      ico.title = ringing
+        ? "Alarm ringing"
+        : hasOn
+        ? "Alarms on — tap to turn off"
+        : any
+        ? "Alarms off — tap to turn on"
+        : "Alarms";
+      ico.setAttribute("aria-pressed", hasOn || ringing ? "true" : "false");
+      // Keep SVG pinned tiny every paint (in case HA rewrites markup).
+      ico.querySelectorAll("svg").forEach((svg) => {
+        svg.setAttribute("width", "10");
+        svg.setAttribute("height", "10");
+        svg.style.width = "10px";
+        svg.style.height = "10px";
+        svg.style.display = "block";
+      });
     }
   };
 

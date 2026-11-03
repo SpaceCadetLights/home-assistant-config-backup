@@ -22,6 +22,55 @@ automation:
         data:
           query: "{{ trigger.event.data.query | default('', true) | string | trim }}"
 
+  # Full Studio is AirPlay1 + Raspberry Pi + Bathroom HomePod. When Bathroom
+  # HomePod briefly fails native AirPlay 2 connect, MA aborts the whole group
+  # ("Playback failed to start"). Retry media_play so GUI / MA UI recover
+  # without needing a second manual tap.
+  - id: full_studio_play_start_retry
+    alias: Full Studio — retry if play fails to start
+    mode: restart
+    trigger:
+      - platform: event
+        event_type: call_service
+        event_data:
+          domain: music_assistant
+          service: play_media
+      - platform: event
+        event_type: call_service
+        event_data:
+          domain: media_player
+          service: media_play
+    condition:
+      - condition: template
+        value_template: >-
+          {% set raw = trigger.event.data.service_data.entity_id
+             | default(trigger.event.data.target.entity_id | default([], true), true) %}
+          {% if raw is string %}
+            {% set ids = [raw] %}
+          {% elif raw is iterable %}
+            {% set ids = raw | list %}
+          {% else %}
+            {% set ids = [] %}
+          {% endif %}
+          {{ ids | map('string') | select('eq', 'media_player.full_studio') | list | length > 0 }}
+    action:
+      - delay: "00:00:08"
+      - condition: template
+        value_template: >-
+          {{ states('media_player.full_studio') not in ['playing', 'buffering'] }}
+      - action: media_player.media_play
+        continue_on_error: true
+        target:
+          entity_id: media_player.full_studio
+      - delay: "00:00:06"
+      - condition: template
+        value_template: >-
+          {{ states('media_player.full_studio') not in ['playing', 'buffering'] }}
+      - action: media_player.media_play
+        continue_on_error: true
+        target:
+          entity_id: media_player.full_studio
+
 script:
   play_studio_music:
     alias: Play Studio Music
@@ -167,7 +216,11 @@ script:
 
   play_studio_music_ma_play:
     alias: Play Studio Music MA Play
-    description: Internal — MA play_media with replace queue + optional radio
+    description: >-
+      Internal — MA play_media with replace queue + optional radio. Always
+      issues play_media even when Full Studio is already playing (so vibe /
+      change-track requests actually swap the queue). Retries only if playback
+      fails to start after AirPlay group connect issues.
     mode: restart
     fields:
       media_id:
@@ -181,12 +234,21 @@ script:
         description: MA radio_mode for Spotify-like continuation after a track
         default: false
     sequence:
+      - variables:
+          prior_content: >-
+            {{ state_attr('media_player.full_studio', 'media_content_id')
+               | default('', true) | string }}
+          want_replace: >-
+            {{ (enqueue | default('replace') | string | lower | trim) == 'replace' }}
+      # Always play first — do NOT skip when already playing (that blocked
+      # Jarvis "change the music / pick something for the moment" requests).
       - choose:
           - conditions:
               - condition: template
                 value_template: "{{ use_radio | bool }}"
             sequence:
               - action: music_assistant.play_media
+                continue_on_error: true
                 target:
                   entity_id: media_player.full_studio
                 data:
@@ -201,6 +263,7 @@ script:
                      and media_type | default('') | trim != '' }}
             sequence:
               - action: music_assistant.play_media
+                continue_on_error: true
                 target:
                   entity_id: media_player.full_studio
                 data:
@@ -214,11 +277,63 @@ script:
                      and media_type | default('') | trim == '' }}
             sequence:
               - action: music_assistant.play_media
+                continue_on_error: true
                 target:
                   entity_id: media_player.full_studio
                 data:
                   media_id: "{{ media_id }}"
                   enqueue: "{{ enqueue | default('replace') }}"
+      - delay: "00:00:05"
+      # Retry only when start failed, or replace didn't actually change media.
+      - repeat:
+          while:
+            - condition: template
+              value_template: >-
+                {% set st = states('media_player.full_studio') %}
+                {% set cur = state_attr('media_player.full_studio', 'media_content_id')
+                   | default('', true) | string %}
+                {% set dead = st not in ['playing', 'buffering'] %}
+                {% set stuck = want_replace | bool
+                   and prior_content != ''
+                   and cur == prior_content
+                   and (media_id | string) not in cur %}
+                {{ (dead or stuck) and repeat.index <= 2 }}
+          sequence:
+            - choose:
+                - conditions:
+                    - condition: template
+                      value_template: "{{ media_type | default('') | trim != '' }}"
+                  sequence:
+                    - action: music_assistant.play_media
+                      continue_on_error: true
+                      target:
+                        entity_id: media_player.full_studio
+                      data:
+                        media_id: "{{ media_id }}"
+                        enqueue: "{{ enqueue | default('replace') }}"
+                        media_type: "{{ media_type }}"
+                - conditions:
+                    - condition: template
+                      value_template: "{{ media_type | default('') | trim == '' }}"
+                  sequence:
+                    - action: music_assistant.play_media
+                      continue_on_error: true
+                      target:
+                        entity_id: media_player.full_studio
+                      data:
+                        media_id: "{{ media_id }}"
+                        enqueue: "{{ enqueue | default('replace') }}"
+            - delay: "00:00:05"
+            - choose:
+                - conditions:
+                    - condition: template
+                      value_template: >-
+                        {{ states('media_player.full_studio') not in ['playing', 'buffering'] }}
+                  sequence:
+                    - action: media_player.media_play
+                      continue_on_error: true
+                      target:
+                        entity_id: media_player.full_studio
 
   play_studio_music_search_and_play:
     alias: Play Studio Music Search And Play
