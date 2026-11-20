@@ -145,7 +145,15 @@ script:
           tid: "{{ id | string }}"
       - event: sc_alarms_set
         event_data:
-          alarms: "{{ cur | rejectattr('id','equalto', tid | string) | list }}"
+          # IDs may be int in sensor attrs while the UI sends strings — compare as strings.
+          alarms: >-
+            {%- set ns = namespace(out=[]) -%}
+            {%- for a in cur -%}
+              {%- if (a.id | string) != (tid | string) -%}
+                {%- set ns.out = ns.out + [a] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.out }}
       - wait_template: >-
           {{ tid not in (state_attr('sensor.sc_alarms','items') | default([], true)
              | map(attribute='id') | map('string') | list) }}

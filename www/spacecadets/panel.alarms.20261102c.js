@@ -1,13 +1,12 @@
 /**
  * Space Cadets — Alarms addon
- * Clock meta expands like Crew; nebula-style picks; ringing snooze/stop sheet.
+ * Clock meta expands like Crew; card blocks; modern builder dialog; ring sheet.
  */
 (function () {
   const Ctor = customElements.get("spacecadets-panel");
   if (!Ctor) throw new Error("spacecadets-panel not registered");
   const Proto = Ctor.prototype;
 
-  // Always refresh CSS (versioned) so icon/toggle fixes aren't stuck behind an old style tag.
   {
     let style = document.getElementById("sc-alarm-css");
     if (!style) {
@@ -15,12 +14,12 @@
       style.id = "sc-alarm-css";
       document.head.appendChild(style);
     }
-    style.setAttribute("data-v", "20261103b");
+    style.setAttribute("data-v", "20261120a");
     style.textContent = `
+/* ── Clock corner badge ── */
 .sc-clock-btn {
-  cursor: pointer; transition: 0.2s ease; position: relative;
-  text-align: center;
-  overflow: visible;
+  cursor: pointer; transition: border-color 0.25s ease, box-shadow 0.25s ease; position: relative;
+  text-align: center; overflow: visible;
 }
 .sc-clock-btn:hover { border-color: rgba(94,234,212,0.55); box-shadow: 0 0 24px rgba(45,212,191,0.28); }
 .sc-clock-btn.has-alarm { border-color: rgba(74,222,128,0.35); }
@@ -38,7 +37,6 @@
   display:flex; align-items:center; justify-content:center;
   gap:0; margin-top:4px; min-height:0;
 }
-/* Tiny corner ON/OFF toggle — SVG must stay 10px (bare SVG ≈ 300×150). */
 .sc-clock-ico {
   position: absolute; top: 5px; right: 5px; z-index: 2;
   box-sizing: border-box;
@@ -53,9 +51,10 @@
   color: #4ade80;
   cursor: pointer;
   appearance: none; -webkit-appearance: none;
-  filter: none;
   box-shadow: 0 0 8px rgba(74,222,128,0.35);
+  transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease, transform 0.15s ease;
 }
+.sc-clock-ico:active { transform: scale(0.92); }
 .sc-clock-ico svg,
 .sc-clock-btn .sc-clock-ico svg,
 #sc-clock-ico svg {
@@ -79,7 +78,16 @@
 }
 .sc-clock-next { display: none !important; }
 
-.sc-modal-alarms { text-align: center; position: relative; }
+/* ── Sheet shell ── */
+.sc-modal-alarms {
+  text-align: center; position: relative;
+  max-width: min(440px, calc(100vw - 20px));
+  animation: sc-alarm-sheet-in 0.42s cubic-bezier(.16,1,.3,1) both;
+}
+@keyframes sc-alarm-sheet-in {
+  from { opacity: 0; transform: translateY(28px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
 .sc-modal-alarms .sc-modal-head {
   display:flex; flex-direction:column; align-items:center; gap:6px; text-align:center;
   position: relative; padding-right: 0;
@@ -91,14 +99,22 @@
 }
 .sc-modal-alarms .sc-card-title svg { width: 14px; height: 14px; margin: 0; }
 .sc-modal-alarms .sc-modal-sub {
-  font-size: 11px; letter-spacing: 0.12em; color: #fdba74; opacity: 0.9;
+  font-size: 11px; letter-spacing: 0.1em; color: #fdba74; opacity: 0.9;
 }
 .sc-modal-alarms .sc-modal-x { position: absolute; top: 14px; right: 14px; }
 .sc-modal-alarms .sc-alarms-actions {
-  display:flex; justify-content:center; margin: 4px 0 14px;
+  display:flex; justify-content:center; margin: 6px 0 16px;
 }
+.sc-modal-alarms .sc-alarms-actions .sc-chip {
+  min-height: 44px; padding: 0 22px; letter-spacing: 0.14em;
+  transition: transform 0.18s ease, box-shadow 0.25s ease, filter 0.2s ease;
+}
+.sc-modal-alarms .sc-alarms-actions .sc-chip:hover {
+  transform: translateY(-1px); filter: brightness(1.08);
+}
+.sc-modal-alarms .sc-alarms-actions .sc-chip:active { transform: scale(0.97); }
 .sc-modal-alarms .sc-modal-foot {
-  text-align: center; font-size: 10px; letter-spacing: 0.12em; opacity: 0.75;
+  text-align: center; font-size: 10px; letter-spacing: 0.12em; opacity: 0.65; margin-top: 14px;
 }
 
 .sc-alarms-head {
@@ -114,109 +130,327 @@
   line-height:1.45; opacity:0.9; text-transform:none; color:#e9d5ff;
 }
 .sc-alarms-empty {
-  padding:18px; border:1px dashed rgba(251,191,36,0.35); border-radius:18px;
-  color:#ffe8c2; opacity:0.9; text-align:center; font-size: 14px; line-height: 1.4;
+  padding:22px 18px; border:1px dashed rgba(167,139,250,0.4); border-radius:20px;
+  color:#e9d5ff; opacity:0.95; text-align:center; font-size: 14px; line-height: 1.45;
+  background: rgba(30,16,48,0.35);
+  animation: sc-alarm-card-in 0.4s ease both;
 }
-.sc-alarm-list { display:grid; gap:14px; }
 
-.sc-alarm {
-  border:1px solid rgba(251,191,36,0.48);
-  background: linear-gradient(165deg, rgba(48,24,8,0.55), rgba(28,12,40,0.58));
-  border-radius:20px;
-  padding:16px 14px 14px;
-  display:flex; flex-direction:column; align-items:center; gap:10px;
-  text-align:center;
-  box-shadow: 0 0 22px rgba(251,191,36,0.12), inset 0 0 24px rgba(251,191,36,0.04);
+/* ── Alarm cards ── */
+.sc-alarm-list {
+  display:grid; gap:12px;
+  max-height: min(58vh, 560px); overflow:auto; padding: 2px 4px 6px;
+  -webkit-overflow-scrolling: touch;
 }
-.sc-alarm.off { opacity:0.5; border-color: rgba(251,191,36,0.22); }
+.sc-alarm {
+  position: relative;
+  border: 1px solid rgba(167,139,250,0.38);
+  background:
+    linear-gradient(155deg, rgba(56,28,88,0.55), rgba(18,10,36,0.72)),
+    rgba(12,6,24,0.65);
+  border-radius: 20px;
+  padding: 14px 14px 12px;
+  display: flex; flex-direction: column; gap: 10px;
+  text-align: left;
+  box-shadow:
+    0 8px 28px rgba(0,0,0,0.35),
+    0 0 0 1px rgba(255,255,255,0.03) inset,
+    0 0 24px rgba(139,92,246,0.12);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: border-color 0.25s ease, opacity 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease;
+  animation: sc-alarm-card-in 0.4s cubic-bezier(.16,1,.3,1) both;
+}
+@keyframes sc-alarm-card-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+.sc-alarm:nth-child(1) { animation-delay: 0.03s; }
+.sc-alarm:nth-child(2) { animation-delay: 0.08s; }
+.sc-alarm:nth-child(3) { animation-delay: 0.13s; }
+.sc-alarm:nth-child(4) { animation-delay: 0.18s; }
+.sc-alarm:nth-child(5) { animation-delay: 0.23s; }
+.sc-alarm:hover {
+  border-color: rgba(196,181,253,0.55);
+  box-shadow: 0 10px 32px rgba(0,0,0,0.4), 0 0 28px rgba(139,92,246,0.18);
+}
+.sc-alarm.off {
+  opacity: 0.62;
+  border-color: rgba(248,113,113,0.28);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.25);
+}
+.sc-alarm.on-glow { border-color: rgba(74,222,128,0.4); }
+
 .sc-alarm-top {
-  display:flex; justify-content:center; align-items:center; gap:10px; flex-wrap:wrap;
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
   width: 100%;
 }
 .sc-alarm-time {
-  font-family: Orbitron, sans-serif; font-size:22px; letter-spacing:0.06em; color:#fff7ed;
-  background:rgba(40,18,8,0.55); border:1px solid rgba(251,191,36,0.4); border-radius:14px;
-  padding:8px 14px; color-scheme: dark; text-align:center; min-width: 7.5em;
+  -webkit-appearance: none !important; appearance: none !important;
+  font-family: Orbitron, sans-serif !important;
+  font-size: 22px !important; letter-spacing: 0.04em;
+  color: #faf5ff !important;
+  background: rgba(8,4,20,0.55) !important;
+  border: 1px solid rgba(167,139,250,0.4) !important;
+  border-radius: 14px !important;
+  padding: 10px 12px !important;
+  color-scheme: dark !important;
+  text-align: center;
+  min-width: 0; flex: 1;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
+.sc-alarm-time:focus {
+  outline: none;
+  border-color: rgba(94,234,212,0.65) !important;
+  box-shadow: 0 0 0 3px rgba(45,212,191,0.18);
+}
+.sc-alarm-time::-webkit-calendar-picker-indicator {
+  filter: invert(0.85) sepia(1) saturate(3) hue-rotate(220deg);
+  opacity: 0.7; cursor: pointer;
+}
+
+/* Green / red switch */
 .sc-alarm-toggle {
-  min-width: 76px; height: 40px; border-radius: 999px;
-  border: 1px solid rgba(248,113,113,0.55);
-  background: linear-gradient(135deg, rgba(127,29,29,0.75), rgba(69,10,10,0.7));
-  color: #fecaca;
-  font-family: Orbitron, sans-serif;
-  font-size: 11px; letter-spacing: 0.16em; cursor: pointer;
-  box-shadow: 0 0 16px rgba(248,113,113,0.22);
-  transition: 0.2s ease;
+  -webkit-appearance: none !important; appearance: none !important;
+  position: relative;
+  flex: 0 0 auto;
+  width: 64px; height: 34px;
+  min-width: 64px; padding: 0 !important; margin: 0;
+  border-radius: 999px !important;
+  border: 1px solid rgba(248,113,113,0.55) !important;
+  background: linear-gradient(135deg, #7f1d1d, #450a0a) !important;
+  color: transparent !important;
+  font-size: 0 !important;
+  cursor: pointer;
+  box-shadow: 0 0 14px rgba(248,113,113,0.28), inset 0 1px 0 rgba(255,255,255,0.08);
+  transition: background 0.28s ease, border-color 0.28s ease, box-shadow 0.28s ease;
 }
-.sc-alarm-toggle:hover { filter: brightness(1.08); }
+.sc-alarm-toggle::before {
+  content: "OFF";
+  position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
+  font-family: Orbitron, sans-serif; font-size: 8px; letter-spacing: 0.08em;
+  color: #fecaca; opacity: 0.95; pointer-events: none;
+}
+.sc-alarm-toggle::after {
+  content: "";
+  position: absolute; top: 3px; left: 3px;
+  width: 26px; height: 26px; border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+  transition: transform 0.28s cubic-bezier(.16,1,.3,1);
+}
 .sc-alarm-toggle.on {
-  border-color: rgba(74,222,128,0.65);
-  background: linear-gradient(135deg, rgba(21,128,61,0.8), rgba(6,78,59,0.75));
-  color: #bbf7d0;
-  box-shadow: 0 0 18px rgba(74,222,128,0.3);
+  border-color: rgba(74,222,128,0.7) !important;
+  background: linear-gradient(135deg, #15803d, #064e3b) !important;
+  box-shadow: 0 0 16px rgba(74,222,128,0.35), inset 0 1px 0 rgba(255,255,255,0.1);
 }
+.sc-alarm-toggle.on::before {
+  content: "ON"; left: auto; right: 9px; color: #bbf7d0;
+}
+.sc-alarm-toggle.on::after { transform: translateX(30px); }
+.sc-alarm-toggle:active::after { transform: translateX(2px) scale(0.96); }
+.sc-alarm-toggle.on:active::after { transform: translateX(28px) scale(0.96); }
+
+.sc-alarm-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .sc-alarm-label {
-  font-family: Rajdhani, sans-serif; font-weight:700; font-size:18px;
-  color:#fff7ed; letter-spacing: 0.02em;
+  font-family: Rajdhani, sans-serif; font-weight: 700; font-size: 17px;
+  color: #faf5ff; letter-spacing: 0.02em; line-height: 1.2;
 }
 .sc-alarm-when {
-  font-family: Orbitron, sans-serif; font-size:10px; letter-spacing:0.12em;
-  color:#fbbf24; text-transform:uppercase; opacity: 0.9; line-height: 1.35;
+  font-family: Orbitron, sans-serif; font-size: 9px; letter-spacing: 0.1em;
+  color: #c4b5fd; text-transform: uppercase; opacity: 0.9; line-height: 1.35;
+}
+
+.sc-alarm-divider {
+  height: 1px; width: 100%;
+  background: linear-gradient(90deg, transparent, rgba(167,139,250,0.35), transparent);
+  margin: 0;
 }
 
 .sc-alarm-field {
-  display:flex; flex-direction:column; align-items:center; gap:6px; width:100%;
+  display: flex; flex-direction: column; align-items: stretch; gap: 6px; width: 100%;
 }
 .sc-alarm-lbl {
-  font-family: Orbitron, sans-serif; font-size:9px; letter-spacing:0.16em; color:#fdba74;
+  font-family: Orbitron, sans-serif; font-size: 9px; letter-spacing: 0.16em; color: #a78bfa;
+  text-align: left;
 }
 .sc-alarm-lbl em {
-  font-style:normal; color:#67e8f9; letter-spacing:0.08em; font-size:9px; margin-left:6px;
+  font-style: normal; color: #67e8f9; letter-spacing: 0.08em; font-size: 9px; margin-left: 6px;
 }
 .sc-alarm-pick {
-  display:flex; align-items:center; justify-content:center; gap:10px; width:100%;
-  text-align:center;
-  background: linear-gradient(135deg, rgba(55,28,8,0.75), rgba(30,12,40,0.65));
-  border:1px solid rgba(251,191,36,0.32); border-radius:14px; padding:11px 14px;
-  color:#fff7ed; font:inherit; cursor:pointer;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
+  text-align: left;
+  -webkit-appearance: none !important; appearance: none !important;
+  background: rgba(8,4,20,0.5) !important;
+  border: 1px solid rgba(167,139,250,0.32) !important;
+  border-radius: 12px !important;
+  padding: 10px 12px !important;
+  color: #f5f3ff !important;
+  font: inherit; cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
 }
 .sc-alarm-pick:hover {
-  border-color:rgba(251,191,36,0.7); box-shadow:0 0 18px rgba(251,191,36,0.28);
+  border-color: rgba(196,181,253,0.65) !important;
+  box-shadow: 0 0 16px rgba(139,92,246,0.22);
 }
+.sc-alarm-pick:active { transform: scale(0.99); }
 .sc-alarm-pick .txt {
-  flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-  font-weight:600; font-size: 15px;
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 600; font-size: 14px; font-family: Rajdhani, sans-serif;
 }
-.sc-alarm-pick .chev { color:#fbbf24; font-size:10px; letter-spacing:0.12em; flex:0 0 auto; }
+.sc-alarm-pick .chev { color: #c4b5fd; font-size: 9px; letter-spacing: 0.12em; flex: 0 0 auto; }
 
-.sc-alarm-music-row { display:flex; align-items:center; justify-content:center; gap:8px; width:100%; }
+.sc-alarm-music-row { display: flex; align-items: center; gap: 8px; width: 100%; }
 .sc-alarm-music {
-  flex:1; min-width:0; max-width: 100%;
-  background:rgba(40,18,8,0.45); border:1px solid rgba(251,191,36,0.28);
-  border-radius:12px; padding:10px 12px; color:#ffe8c2; font:inherit; text-align:center;
-  font-size: 14px;
+  -webkit-appearance: none !important; appearance: none !important;
+  flex: 1; min-width: 0;
+  background: rgba(8,4,20,0.55) !important;
+  border: 1px solid rgba(167,139,250,0.3) !important;
+  border-radius: 12px !important;
+  padding: 10px 12px !important;
+  color: #ede9fe !important;
+  font-family: Rajdhani, sans-serif !important;
+  font-size: 14px !important;
+  text-align: left;
+  color-scheme: dark !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
-.sc-alarm-foot { display:flex; justify-content:center; gap:10px; width:100%; margin-top: 2px; }
-.sc-alarm-foot .sc-rem-btn svg { width: 16px; height: 16px; }
+.sc-alarm-music::placeholder { color: rgba(196,181,253,0.45); }
+.sc-alarm-music:focus {
+  outline: none;
+  border-color: rgba(94,234,212,0.55) !important;
+  box-shadow: 0 0 0 3px rgba(45,212,191,0.15);
+}
 
-.sc-modal-alarms .sc-alarm-list { max-height: min(58vh, 520px); overflow:auto; padding-right:2px; }
-.sc-alarm-builder { text-align: center; }
-.sc-alarm-builder .sc-alarm-form {
-  display:grid; gap:12px; margin:16px 0; justify-items: center;
+.sc-alarm-tools {
+  display: flex; align-items: center; gap: 8px; width: 100%;
 }
-.sc-alarm-builder label {
-  display:flex; flex-direction:column; align-items:center; gap:6px; width: 100%;
-  font-family: Orbitron, sans-serif; font-size:10px; letter-spacing:0.16em; color:#fdba74;
+.sc-alarm-tools .sc-alarm-pick { flex: 1; }
+.sc-alarm-tools .sc-rem-btn,
+.sc-alarm-music-row .sc-rem-btn {
+  -webkit-appearance: none !important; appearance: none !important;
+  flex: 0 0 auto;
+  width: 40px; height: 40px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 12px !important;
+  border: 1px solid rgba(167,139,250,0.35) !important;
+  background: rgba(30,16,48,0.7) !important;
+  color: #e9d5ff !important;
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.2s ease, background 0.2s ease;
+}
+.sc-alarm-tools .sc-rem-btn:hover,
+.sc-alarm-music-row .sc-rem-btn:hover {
+  border-color: rgba(94,234,212,0.5) !important;
+  background: rgba(45,212,191,0.15) !important;
+}
+.sc-alarm-tools .sc-rem-btn.done:hover {
+  border-color: rgba(248,113,113,0.55) !important;
+  background: rgba(248,113,113,0.15) !important;
+}
+.sc-alarm-tools .sc-rem-btn:active,
+.sc-alarm-music-row .sc-rem-btn:active { transform: scale(0.94); }
+.sc-alarm-tools .sc-rem-btn svg,
+.sc-alarm-music-row .sc-rem-btn svg { width: 15px; height: 15px; }
+
+/* ── New alarm builder dialog ── */
+.sc-alarm-builder {
   text-align: center;
+  max-width: min(420px, calc(100vw - 20px));
+  animation: sc-alarm-sheet-in 0.42s cubic-bezier(.16,1,.3,1) both;
 }
-.sc-alarm-builder input, .sc-alarm-builder select {
-  width: 100%;
-  background:rgba(40,18,8,0.55); border:1px solid rgba(251,191,36,0.3); border-radius:12px;
-  padding:12px; color:#fff7ed; font-family: Rajdhani, sans-serif; font-size:16px;
-  color-scheme: dark; text-align:center;
+.sc-alarm-builder .sc-modal-head { text-align: center; }
+.sc-alarm-builder .sc-modal-sub { color: #c4b5fd; }
+.sc-alarm-builder .sc-alarm-form {
+  display: grid; gap: 14px; margin: 8px 0 18px; justify-items: stretch;
+  text-align: left;
 }
-.sc-alarm-form-actions { display:flex; justify-content:center; gap:10px; }
+.sc-alarm-builder .sc-ab-block {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(167,139,250,0.28);
+  background: rgba(12,6,28,0.45);
+  animation: sc-alarm-card-in 0.4s cubic-bezier(.16,1,.3,1) both;
+}
+.sc-alarm-builder .sc-ab-block:nth-child(1) { animation-delay: 0.05s; }
+.sc-alarm-builder .sc-ab-block:nth-child(2) { animation-delay: 0.1s; }
+.sc-alarm-builder .sc-ab-block:nth-child(3) { animation-delay: 0.15s; }
+.sc-alarm-builder .sc-ab-block:nth-child(4) { animation-delay: 0.2s; }
+.sc-alarm-builder .sc-ab-kicker {
+  font-family: Orbitron, sans-serif; font-size: 9px; letter-spacing: 0.18em;
+  color: #a78bfa; text-transform: uppercase;
+}
+.sc-alarm-builder .sc-ab-hint {
+  font-family: Rajdhani, sans-serif; font-size: 13px; color: rgba(233,213,255,0.7);
+  line-height: 1.35; margin: 0;
+}
+.sc-alarm-builder input[type="time"],
+.sc-alarm-builder input[type="text"],
+.sc-alarm-builder textarea {
+  -webkit-appearance: none !important; appearance: none !important;
+  width: 100%; box-sizing: border-box;
+  background: rgba(8,4,20,0.65) !important;
+  border: 1px solid rgba(167,139,250,0.35) !important;
+  border-radius: 14px !important;
+  padding: 14px 14px !important;
+  color: #faf5ff !important;
+  font-family: Rajdhani, sans-serif !important;
+  font-size: 16px !important;
+  color-scheme: dark !important;
+  text-align: left;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.sc-alarm-builder input[type="time"] {
+  font-family: Orbitron, sans-serif !important;
+  font-size: 28px !important; letter-spacing: 0.06em;
+  text-align: center; padding: 16px !important;
+}
+.sc-alarm-builder input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.85) sepia(1) saturate(3) hue-rotate(220deg);
+  opacity: 0.75; cursor: pointer;
+}
+.sc-alarm-builder textarea {
+  min-height: 88px; resize: vertical; line-height: 1.4;
+}
+.sc-alarm-builder input:focus,
+.sc-alarm-builder textarea:focus {
+  outline: none;
+  border-color: rgba(94,234,212,0.6) !important;
+  box-shadow: 0 0 0 3px rgba(45,212,191,0.16);
+}
+.sc-alarm-builder input::placeholder,
+.sc-alarm-builder textarea::placeholder { color: rgba(196,181,253,0.4); }
+.sc-ab-chips {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px;
+}
+.sc-ab-chip {
+  -webkit-appearance: none !important; appearance: none !important;
+  border: 1px solid rgba(167,139,250,0.35) !important;
+  background: rgba(76,29,149,0.35) !important;
+  color: #e9d5ff !important;
+  border-radius: 999px !important;
+  padding: 6px 12px !important;
+  font-family: Rajdhani, sans-serif; font-size: 12px; font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.2s ease, border-color 0.2s ease;
+}
+.sc-ab-chip:hover {
+  border-color: rgba(94,234,212,0.5) !important;
+  background: rgba(45,212,191,0.18) !important;
+}
+.sc-ab-chip:active { transform: scale(0.96); }
+.sc-alarm-form-actions {
+  display: flex; justify-content: center; gap: 10px;
+}
+.sc-alarm-form-actions .sc-chip {
+  min-height: 46px; min-width: 110px;
+  transition: transform 0.18s ease, filter 0.2s ease;
+}
+.sc-alarm-form-actions .sc-chip:active { transform: scale(0.97); }
 
+/* ── Ring modal ── */
 .sc-alarm-ring-modal {
   width: min(420px, calc(100vw - 28px));
   border-radius: 22px;
@@ -225,6 +459,7 @@
   background: linear-gradient(160deg, rgba(48,22,8,0.94), rgba(24,8,48,0.92));
   box-shadow: 0 0 40px rgba(251,191,36,0.28), inset 0 0 30px rgba(251,113,133,0.08);
   text-align: center;
+  animation: sc-alarm-sheet-in 0.38s cubic-bezier(.16,1,.3,1) both;
 }
 .sc-alarm-ring-kicker {
   font-family: Orbitron, sans-serif; font-size:11px; letter-spacing:0.2em; color:#fbbf24;
@@ -251,6 +486,13 @@
     ["daily", "Daily"],
     ["weekdays", "Weekdays"],
     ["weekends", "Weekends"],
+  ];
+
+  const VIBE_CHIPS = [
+    "chill morning acoustic",
+    "lofi beats",
+    "upbeat wake up",
+    "jazz coffee",
   ];
 
   Proto._alarms = function () {
@@ -299,7 +541,6 @@
     return this._alarms().filter((a) => a.enabled !== false);
   };
 
-  /** Corner bell: green = on, red = off. Tap flips every alarm to the opposite master state. */
   Proto._toggleAlarmsMaster = function () {
     const items = this._alarms();
     if (!items.length) {
@@ -334,7 +575,6 @@
     return this._alarms().find((a) => String(a.id) === id) || { id, label: "Alarm", time: "", music_label: "" };
   };
 
-  // No separate overview card — clock is the access point
   Proto._htmlHomeAlarms = function () {
     return "";
   };
@@ -374,31 +614,31 @@
     const music = this._esc(a.music_label || a.music_query || "Default playlist");
     const label = this._esc(a.label || "Alarm");
     return `
-      <div class="sc-alarm ${enabled ? "" : "off"}" data-alarm-id="${id}">
+      <article class="sc-alarm ${enabled ? "on-glow" : "off"}" data-alarm-id="${id}">
         <div class="sc-alarm-top">
           <input type="time" class="sc-alarm-time" value="${time}" data-act="alarm-time" data-id="${id}" aria-label="Alarm time">
-          <button type="button" class="sc-alarm-toggle ${enabled ? "on" : ""}" data-act="alarm-toggle" data-id="${id}" title="${enabled ? "Disable" : "Enable"}">${enabled ? "ON" : "OFF"}</button>
+          <button type="button" class="sc-alarm-toggle ${enabled ? "on" : ""}" data-act="alarm-toggle" data-id="${id}" title="${enabled ? "Disable" : "Enable"}" aria-pressed="${enabled ? "true" : "false"}">${enabled ? "ON" : "OFF"}</button>
         </div>
-        <div class="sc-alarm-label">${label}</div>
-        <div class="sc-alarm-when">${this._esc(this._alarmWhenLabel(a))}</div>
+        <div class="sc-alarm-meta">
+          <div class="sc-alarm-label">${label}</div>
+          <div class="sc-alarm-when">${this._esc(this._alarmWhenLabel(a))}</div>
+        </div>
+        <div class="sc-alarm-divider"></div>
         <div class="sc-alarm-field">
           <span class="sc-alarm-lbl">MUSIC <em>MA</em></span>
           <div class="sc-alarm-music-row">
-            <input class="sc-alarm-music" value="${music}" data-act="alarm-music" data-id="${id}" placeholder="Playlist or vibe" aria-label="Alarm music">
+            <input class="sc-alarm-music" value="${music}" data-act="alarm-music" data-id="${id}" placeholder="Playlist or vibe prompt" aria-label="Alarm music">
             <button type="button" class="sc-rem-btn" data-act="alarm-music-apply" data-id="${id}" title="Resolve music">${this._ic("check")}</button>
           </div>
         </div>
-        <div class="sc-alarm-field">
-          <span class="sc-alarm-lbl">REPEAT</span>
+        <div class="sc-alarm-tools">
           <button type="button" class="sc-alarm-pick" data-act="alarm-pick-recurring" data-id="${id}" data-current="${this._esc(rec)}">
-            <span class="txt">${this._esc(this._recLabel(rec))}</span>
+            <span class="txt">Repeat · ${this._esc(this._recLabel(rec))}</span>
             <span class="chev">▼</span>
           </button>
-        </div>
-        <div class="sc-alarm-foot">
           <button type="button" class="sc-rem-btn done" data-act="alarm-delete" data-id="${id}" title="Delete alarm" aria-label="Delete">${this._ic("close")}</button>
         </div>
-      </div>`;
+      </article>`;
   };
 
   Proto._wireAlarmClock = function () {
@@ -414,7 +654,6 @@
     btn.id = "sc-clock-btn";
     btn.title = "Alarms";
     btn.setAttribute("aria-label", "Open alarms");
-    // Inline width/height on the SVG — bare SVGs default to ~300×150 otherwise.
     const bellSvg = String(this._ic("bell") || "")
       .replace("<svg ", '<svg width="10" height="10" style="width:10px;height:10px;display:block" ');
     btn.innerHTML = `
@@ -486,7 +725,6 @@
         ? "Alarms off — tap to turn on"
         : "Alarms";
       ico.setAttribute("aria-pressed", hasOn || ringing ? "true" : "false");
-      // Keep SVG pinned tiny every paint (in case HA rewrites markup).
       ico.querySelectorAll("svg").forEach((svg) => {
         svg.setAttribute("width", "10");
         svg.setAttribute("height", "10");
@@ -593,7 +831,6 @@
       options: REC_OPTS.map(([v]) => v),
       current: current || "once",
     });
-    // Relabel picker buttons with friendly names
     const m = this.querySelector("#sc-picker-modal");
     if (!m) return;
     m.querySelectorAll(".sc-pick-item").forEach((el) => {
@@ -615,7 +852,7 @@
       if (recPick) {
         recPick.dataset.value = val;
         const txt = recPick.querySelector(".txt");
-        if (txt) txt.textContent = this._recLabel(val);
+        if (txt) txt.textContent = `Repeat · ${this._recLabel(val)}`;
       }
       return;
     }
@@ -638,26 +875,40 @@
     this._alarmsSheetOpen = false;
     this._modalOpen = true;
     this._lockAppScroll?.(true);
+    const chips = VIBE_CHIPS.map(
+      (v) => `<button type="button" class="sc-ab-chip" data-vibe="${this._esc(v)}">${this._esc(v)}</button>`
+    ).join("");
     m.innerHTML = `
       <div class="sc-modal-backdrop" id="sc-alarm-bd"></div>
       <div class="sc-modal glass sc-alarm-builder">
         <div class="sc-modal-head">
           <div>
             <div class="sc-card-title" style="margin:0">NEW ALARM</div>
-            <div class="sc-modal-sub">TIME · MUSIC · REPEAT</div>
+            <div class="sc-modal-sub">TIME · VIBE PROMPT · REPEAT</div>
           </div>
           <button class="sc-modal-x" id="sc-alarm-x">✕</button>
         </div>
         <div class="sc-alarm-form">
-          <label>Time<input type="time" id="sc-ab-time" value="${def}"></label>
-          <label>Music / vibe<input type="text" id="sc-ab-music" placeholder="chill morning acoustic" autocomplete="off"></label>
-          <div class="sc-alarm-field">
-            <span class="sc-alarm-lbl">REPEAT</span>
+          <div class="sc-ab-block">
+            <span class="sc-ab-kicker">Wake time</span>
+            <input type="time" id="sc-ab-time" value="${def}" aria-label="Alarm time">
+          </div>
+          <div class="sc-ab-block">
+            <span class="sc-ab-kicker">Music vibe prompt</span>
+            <p class="sc-ab-hint">Describe what you want Music Assistant to play when it rings.</p>
+            <textarea id="sc-ab-music" placeholder="e.g. soft acoustic morning playlist, no vocals" autocomplete="off" rows="3"></textarea>
+            <div class="sc-ab-chips">${chips}</div>
+          </div>
+          <div class="sc-ab-block">
+            <span class="sc-ab-kicker">Repeat</span>
             <button type="button" class="sc-alarm-pick" id="sc-ab-rec-pick" data-value="once">
-              <span class="txt">Once</span><span class="chev">▼</span>
+              <span class="txt">Repeat · Once</span><span class="chev">▼</span>
             </button>
           </div>
-          <label>Label<input type="text" id="sc-ab-label" placeholder="Morning" autocomplete="off"></label>
+          <div class="sc-ab-block">
+            <span class="sc-ab-kicker">Label</span>
+            <input type="text" id="sc-ab-label" placeholder="Morning" autocomplete="off">
+          </div>
         </div>
         <div class="sc-alarm-form-actions">
           <button type="button" class="sc-chip" id="sc-ab-cancel">CANCEL</button>
@@ -673,6 +924,15 @@
     m.querySelector("#sc-alarm-bd")?.addEventListener("click", close);
     m.querySelector("#sc-alarm-x")?.addEventListener("click", close);
     m.querySelector("#sc-ab-cancel")?.addEventListener("click", close);
+    const musicEl = m.querySelector("#sc-ab-music");
+    m.querySelectorAll(".sc-ab-chip").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        if (!musicEl) return;
+        musicEl.value = chip.dataset.vibe || chip.textContent || "";
+        musicEl.focus();
+        musicEl.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    });
     const recPick = m.querySelector("#sc-ab-rec-pick");
     recPick?.addEventListener("click", () => {
       this._alarmBuilderRecPick = recPick;
@@ -690,7 +950,7 @@
     });
     m.querySelector("#sc-ab-save")?.addEventListener("click", () => {
       const time = m.querySelector("#sc-ab-time")?.value || "07:00";
-      const music = (m.querySelector("#sc-ab-music")?.value || "").trim();
+      const music = (musicEl?.value || "").trim();
       const recurring = recPick?.dataset.value || "once";
       const label = (m.querySelector("#sc-ab-label")?.value || "").trim() || "Alarm";
       this._call("script", "alarm_add", {
