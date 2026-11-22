@@ -71,6 +71,35 @@ automation:
         target:
           entity_id: media_player.full_studio
 
+  # If Endless Mix somehow fails to refill, don't die at end-of-queue — restart
+  # radio from the last track so Full Studio keeps flowing.
+  - id: full_studio_endless_on_queue_end
+    alias: Full Studio — Endless Mix when queue ends
+    mode: single
+    max_exceeded: silent
+    trigger:
+      - platform: state
+        entity_id: media_player.full_studio
+        from: playing
+        to: idle
+        for: "00:00:10"
+    condition:
+      - condition: template
+        value_template: >-
+          {{ trigger.to_state.context.user_id is none
+             and state_attr('media_player.full_studio', 'app_id') | default('') == 'music_assistant'
+             and state_attr('media_player.full_studio', 'media_content_id') | default('', true) | string | trim != '' }}
+    action:
+      - action: music_assistant.play_media
+        continue_on_error: true
+        target:
+          entity_id: media_player.full_studio
+        data:
+          media_id: "{{ state_attr('media_player.full_studio', 'media_content_id') }}"
+          media_type: track
+          enqueue: replace
+          radio_mode: true
+
 script:
   play_studio_music:
     alias: Play Studio Music
@@ -126,6 +155,7 @@ script:
                   media_id: "{{ default_uri }}"
                   media_type: playlist
                   enqueue: "{{ enqueue_mode }}"
+                  use_radio: "{{ enqueue_mode == 'replace' }}"
               - action: input_text.set_value
                 target:
                   entity_id: input_text.studio_music_last_pick
@@ -231,8 +261,10 @@ script:
         description: replace (default), add, or next
         default: replace
       use_radio:
-        description: MA radio_mode for Spotify-like continuation after a track
-        default: false
+        description: >-
+          Endless Mix (MA radio_mode) — keep filling similar tracks so the
+          queue never ends. Default on for replace plays; alarms pass false.
+        default: true
     sequence:
       - variables:
           prior_content: >-
@@ -302,7 +334,32 @@ script:
             - choose:
                 - conditions:
                     - condition: template
-                      value_template: "{{ media_type | default('') | trim != '' }}"
+                      value_template: "{{ use_radio | bool and media_type | default('') | trim != '' }}"
+                  sequence:
+                    - action: music_assistant.play_media
+                      continue_on_error: true
+                      target:
+                        entity_id: media_player.full_studio
+                      data:
+                        media_id: "{{ media_id }}"
+                        enqueue: "{{ enqueue | default('replace') }}"
+                        media_type: "{{ media_type }}"
+                        radio_mode: true
+                - conditions:
+                    - condition: template
+                      value_template: "{{ use_radio | bool and media_type | default('') | trim == '' }}"
+                  sequence:
+                    - action: music_assistant.play_media
+                      continue_on_error: true
+                      target:
+                        entity_id: media_player.full_studio
+                      data:
+                        media_id: "{{ media_id }}"
+                        enqueue: "{{ enqueue | default('replace') }}"
+                        radio_mode: true
+                - conditions:
+                    - condition: template
+                      value_template: "{{ not (use_radio | bool) and media_type | default('') | trim != '' }}"
                   sequence:
                     - action: music_assistant.play_media
                       continue_on_error: true
@@ -314,7 +371,7 @@ script:
                         media_type: "{{ media_type }}"
                 - conditions:
                     - condition: template
-                      value_template: "{{ media_type | default('') | trim == '' }}"
+                      value_template: "{{ not (use_radio | bool) and media_type | default('') | trim == '' }}"
                   sequence:
                     - action: music_assistant.play_media
                       continue_on_error: true
@@ -455,7 +512,7 @@ script:
           ma_enqueue: "{{ enqueue | default('replace') | string | lower | trim }}"
           use_track_radio: >-
             {{ (enqueue | default('replace') | string | lower | trim) == 'replace'
-               and chosen_media_type | default('') == 'track' }}
+               and chosen_media_type | default('') in ['track', 'album', 'artist', 'playlist'] }}
       - choose:
           - conditions:
               - condition: template
@@ -531,7 +588,8 @@ script:
                   media_type: "{{ play_media_type }}"
                   enqueue: "{{ ma_enqueue }}"
                   use_radio: >-
-                    {{ ma_enqueue == 'replace' and play_media_type == 'track' }}
+                    {{ ma_enqueue == 'replace'
+                       and play_media_type in ['track', 'album', 'artist', 'playlist'] }}
               - action: input_text.set_value
                 target:
                   entity_id: input_text.studio_music_last_pick
