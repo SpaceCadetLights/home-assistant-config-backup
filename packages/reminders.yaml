@@ -66,10 +66,13 @@ script:
   reminder_add:
     alias: Reminder Add
     description: >-
-      Schedule a reminder. message = what to remind about (action only, e.g.
-      "take medicine" — never include the time phrase). delay_seconds = seconds
-      from NOW until due (600 = 10 minutes). Do not use 0 unless the user asked
-      for an immediate reminder.
+      Schedule a house reminder only when the person asks to be reminded.
+      Do not use this for a project, a task, or a due date, including a
+      follow-up such as adding a task to that project or saying a task is due
+      on a date. Those belong to the living plan. message is the action only,
+      with no time words. delay_seconds is seconds from now until the time
+      this request states. Do not reuse a time from an earlier request unless
+      this request states that time. Do not use 0 unless they asked immediately.
     fields:
       message:
         description: What to remind about (action only, no time words).

@@ -15,7 +15,7 @@
       },
       {
         "id": "dashboard_main",
-        "show_in_sidebar": true,
+        "show_in_sidebar": false,
         "title": "Main",
         "require_admin": false,
         "mode": "storage",
@@ -27,7 +27,7 @@
         "title": "Overview",
         "url_path": "lovelace",
         "mode": "storage",
-        "show_in_sidebar": true,
+        "show_in_sidebar": false,
         "require_admin": false
       }
     ]
